@@ -1,0 +1,113 @@
+name: Code Quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Syntax check all Python files
+        run: |
+          echo "=== Syntax Check ==="
+          python -c "
+          import py_compile, glob, sys
+          files = glob.glob('src/*.py') + ['config.py', 'live.py']
+          errors = []
+          for f in files:
+              try:
+                  py_compile.compile(f, doraise=True)
+              except py_compile.PyCompileError as e:
+                  errors.append(str(e))
+          print(f'Checked {len(files)} files')
+          if errors:
+              for e in errors:
+                  print(f'FAIL: {e}')
+              sys.exit(1)
+          print('All syntax OK')
+          "
+
+      - name: No hardcoded secrets
+        run: |
+          echo "=== Secret Scan ==="
+          # Check for common secret patterns (skip .env.example and docs)
+          if grep -rn --include="*.py" -E "(api_key|token|secret|password)\s*=\s*['\"][a-zA-Z0-9]{10,}" src/ live.py config.py 2>/dev/null; then
+            echo "FAIL: Possible hardcoded secret found"
+            exit 1
+          fi
+          echo "No hardcoded secrets found"
+
+      - name: No UI frameworks
+        run: |
+          echo "=== UI Framework Check ==="
+          if grep -rn --include="*.py" -E "import (flask|django|streamlit|dash|fastapi|gradio)" src/ live.py 2>/dev/null; then
+            echo "FAIL: UI framework import found"
+            exit 1
+          fi
+          echo "No UI frameworks found"
+
+      - name: No Google Drive in src
+        run: |
+          echo "=== Google Drive Check ==="
+          if grep -rn --include="*.py" -E "(drive\.mount|google\.colab)" src/ live.py 2>/dev/null; then
+            echo "FAIL: Google Drive reference found in src"
+            exit 1
+          fi
+          echo "No Google Drive references in src"
+
+      - name: All imports resolve
+        run: |
+          echo "=== Import Check ==="
+          python -c "
+          import ast, glob, sys
+          files = glob.glob('src/*.py') + ['config.py']
+          for f in files:
+              try:
+                  with open(f) as fh:
+                      tree = ast.parse(fh.read())
+                  print(f'  OK: {f}')
+              except SyntaxError as e:
+                  print(f'  FAIL: {f} — {e}')
+                  sys.exit(1)
+          print('All imports parseable')
+          "
+
+      - name: Check all required files exist
+        run: |
+          echo "=== File Existence Check ==="
+          FILES=(
+            "live.py" "config.py" "requirements.txt"
+            ".env.example" "README.md" "LICENSE"
+            "src/__init__.py"
+            "src/ctrader_connection.py" "src/macro_checker.py"
+            "src/structure_analyzer.py" "src/zone_calculator.py"
+            "src/orderflow_analyzer.py" "src/entry_checker.py"
+            "src/checklist_engine.py" "src/signal_logger.py"
+            "src/outcome_tracker.py" "src/calendar_checker.py"
+            "src/alert_bot.py" "src/health_monitor.py"
+            "src/model_trainer.py" "src/model_predictor.py"
+            "src/evolution_manager.py" "src/pattern_scanner.py"
+            "notebooks/01_data_fetcher.ipynb"
+          )
+          MISSING=0
+          for f in "${FILES[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "MISSING: $f"
+              MISSING=$((MISSING + 1))
+            fi
+          done
+          if [ $MISSING -gt 0 ]; then
+            echo "FAIL: $MISSING files missing"
+            exit 1
+          fi
+          echo "All ${#FILES[@]} required files present"

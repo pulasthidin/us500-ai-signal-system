@@ -1,0 +1,62 @@
+# ─── API keys & secrets ───────────────────────
+.env
+
+# ─── Python ──────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ─── Virtual environment ─────────────────────
+venv/
+.venv/
+env/
+
+# ─── Database ────────────────────────────────
+database/*.db
+database/*.db-journal
+database/*.db-shm
+database/*.db-wal
+
+# ─── Trained models ──────────────────────────
+models/*.pkl
+models/*.json
+
+# ─── Data files ──────────────────────────────
+data/raw/*.parquet
+data/features/*.parquet
+data/heartbeat.json
+data/heartbeat.json.tmp
+data/checkpoint.json
+data/brief_sent.json
+data/news_calendar_today.json
+test_live.py
+
+# ─── Logs ────────────────────────────────────
+logs/*.log
+
+# ─── Claude Code ─────────────────────────────
+.claude/
+
+# ─── IDE ─────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cursor/
+
+# ─── OS files ────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── pytest ──────────────────────────────────
+.pytest_cache/
+.pytest_tmp/
+htmlcov/
+.coverage
