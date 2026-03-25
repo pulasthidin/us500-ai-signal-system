@@ -84,24 +84,25 @@ from src.structure_analyzer import StructureAnalyzer
 from src.zone_calculator import ZoneCalculator
 
 # ─── globals ─────────────────────────────────────────────────
-alert_bot: AlertBot
-ctrader: CTraderConnection
-us500_id: int
-ustec_id: int
-signal_logger: SignalLogger
-macro_checker: MacroChecker
-calendar_checker: CalendarChecker
-structure_analyzer: StructureAnalyzer
-zone_calculator: ZoneCalculator
-orderflow_analyzer: OrderFlowAnalyzer
-entry_checker: EntryChecker
-checklist_engine: ChecklistEngine
-outcome_tracker: OutcomeTracker
-health_monitor: HealthMonitor
-model_predictor: ModelPredictor
-model_trainer: ModelTrainer
-evolution_manager: EvolutionManager
-pattern_scanner: PatternScanner
+# All initialised to None so guards like `if x is None` are safe before startup completes.
+alert_bot = None
+ctrader = None
+us500_id: int = 0
+ustec_id: int = 0
+signal_logger = None
+macro_checker = None
+calendar_checker = None
+structure_analyzer = None
+zone_calculator = None
+orderflow_analyzer = None
+entry_checker = None
+checklist_engine = None
+outcome_tracker = None
+health_monitor = None
+model_predictor = None
+model_trainer = None
+evolution_manager = None
+pattern_scanner = None
 
 HEARTBEAT_PATH = os.path.join("data", "heartbeat.json")
 TEST_TIMEOUT = 15
@@ -384,11 +385,12 @@ def format_test_report(
     lines.append(f"Training: {missed_training}")
     lines.append("\u2501" * 20)
 
-    m1 = "\u2705" if "model1" in model_predictor.models else "\u274c"
-    m2 = "\u2705" if "model2" in model_predictor.models else "\u274c"
-    m3 = "\u2705" if "model3" in model_predictor.models else "\u274c"
-    evo_stage = evolution_manager.get_stage_info().get("stage", 0)
-    evo_count = signal_logger.get_signal_count()
+    mp_models = model_predictor.models if model_predictor is not None else {}
+    m1 = "\u2705" if "model1" in mp_models else "\u274c"
+    m2 = "\u2705" if "model2" in mp_models else "\u274c"
+    m3 = "\u2705" if "model3" in mp_models else "\u274c"
+    evo_stage = evolution_manager.get_stage_info().get("stage", 0) if evolution_manager is not None else 0
+    evo_count = signal_logger.get_signal_count() if signal_logger is not None else 0
     next_t = {0: 200, 1: 500, 2: 1000}.get(evo_stage, None)
 
     lines.append(f"Models: M1{m1} M2{m2} M3{m3}")
@@ -535,7 +537,7 @@ def startup() -> None:
 
     # ── Step 5: ML trainer + missed training ─────────────────
     model_trainer = ModelTrainer(signal_logger=signal_logger, alert_bot=alert_bot)
-    if not hasattr(sys.modules[__name__], "model_predictor") or model_predictor is None:
+    if model_predictor is None:
         model_predictor = ModelPredictor(signal_logger=signal_logger)
     model_predictor._trainer = model_trainer
     missed_training = "none"
@@ -551,7 +553,7 @@ def startup() -> None:
 
     # ── Step 6: Init remaining analyzers ─────────────────────
     macro_checker = MacroChecker(alert_bot=alert_bot)
-    if not hasattr(sys.modules[__name__], "calendar_checker") or calendar_checker is None:
+    if calendar_checker is None:
         calendar_checker = CalendarChecker(alert_bot=alert_bot)
 
     structure_analyzer = StructureAnalyzer(ctrader, us500_id, alert_bot=alert_bot)
@@ -686,13 +688,18 @@ def weekly_report_and_retrain() -> None:
         model_trainer.check_and_retrain()
         model_predictor.load_all_models()
         evo_result = evolution_manager.run_evolution_check()
+        now = datetime.now(timezone.utc)
+        this_week_iso  = (now - timedelta(days=7)).isoformat()
+        last_week_iso  = (now - timedelta(days=14)).isoformat()
         stats = {
-            "signals_this_week": signal_logger.get_signals_since(
-                (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-            ),
             "win_rate": signal_logger.get_win_rate(),
             "by_session": signal_logger.get_stats_by_session(),
             "by_grade": signal_logger.get_stats_by_grade(),
+            "by_direction": signal_logger.get_stats_by_direction(),
+            "tp_source_breakdown": signal_logger.get_tp_source_breakdown(),
+            "weekly_summary": signal_logger.get_weekly_summary(this_week_iso),
+            "prev_week_win_rate": signal_logger.get_win_rate_since(last_week_iso),
+            "this_week_win_rate": signal_logger.get_win_rate_since(this_week_iso),
             "system_health": health_monitor.get_system_status(),
             "shap_report": model_trainer.get_shap_report(),
             "evolution": evo_result,
@@ -744,6 +751,15 @@ _DAILY_RETRAIN_UTC = _sl_time_to_utc(MODEL_RETRAIN_TIME_SL)
 
 
 def main() -> None:
+    _VALID_SCHEDULE_DAYS = {
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
+    }
+    if MODEL_RETRAIN_DAY.lower() not in _VALID_SCHEDULE_DAYS:
+        raise ValueError(
+            f"MODEL_RETRAIN_DAY='{MODEL_RETRAIN_DAY}' is not a valid day name. "
+            f"Must be one of: {sorted(_VALID_SCHEDULE_DAYS)}"
+        )
+
     startup()
 
     # Convert all UTC schedule times to local system time once at startup.

@@ -33,12 +33,14 @@ USTEC_SYMBOL_ALIASES = ["USTEC", "NAS100", "NASDAQ100"]
 ROUND_LEVEL_INTERVAL = 50
 ZONE_THRESHOLD_POINTS = 15
 ZONE_DEDUP_DISTANCE = 5  # merge levels within 5 points
+EQH_EQL_NEARBY_POINTS = 10  # max distance (pts) to flag EQH/EQL as "nearby" in checklist result
 
 # ──────────────────────────────────────────────
 # ENTRY / EXIT
 # ──────────────────────────────────────────────
 ATR_PERIOD = 14
-SL_ATR_MULTIPLIER = 1.5
+SL_ATR_MULTIPLIER = 1.5       # fallback SL when no FVG edge available
+SL_MIN_ATR_MULTIPLIER = 1.0   # minimum SL distance — prevents noise stops on tight FVGs
 TP_ATR_MULTIPLIER = 2.5
 MIN_RR = 1.6  # TP/SL = 2.5/1.5 = 1.67; threshold set just below to allow entries
 
@@ -80,7 +82,7 @@ NEWS_CAUTION_MINUTES_AFTER = 30
 # SIGNAL DEDUP & OUTCOME
 # ──────────────────────────────────────────────
 SIGNAL_DEDUP_MINUTES = 5
-OUTCOME_CHECK_DELAY_SECONDS = 7200  # 2 hours
+OUTCOME_CHECK_DELAY_SECONDS = 1800  # 30 minutes
 MAX_BARS_MEMORY = 500
 
 # ──────────────────────────────────────────────
@@ -96,7 +98,7 @@ MODEL_RETRAIN_TIME_SL = "23:00"
 # ──────────────────────────────────────────────
 MORNING_BRIEF_TIME_UTC = "00:00"  # = 05:30 SL
 HEALTH_CHECK_INTERVAL_MINUTES = 15
-OUTCOME_CHECK_INTERVAL_MINUTES = 30
+OUTCOME_CHECK_INTERVAL_MINUTES = 10
 SIGNAL_CHECK_INTERVAL_SECONDS = 60
 MACRO_CACHE_SECONDS = 300
 

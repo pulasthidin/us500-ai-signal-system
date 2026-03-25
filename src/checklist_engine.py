@@ -8,11 +8,12 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 os.makedirs("logs", exist_ok=True)
 
 from config import (
+    EQH_EQL_NEARBY_POINTS,
     GRADE_A_SCORE,
     GRADE_B_SCORE,
     SESSIONS_UTC,
@@ -50,7 +51,6 @@ class ChecklistEngine:
         self._signal_logger = signal_logger
         self._alert_bot = alert_bot
         self._hard_stop_active: bool = False
-        self._direction_confidence: Optional[str] = None
 
     # ─── session / time helpers ──────────────────────────────
 
@@ -88,7 +88,11 @@ class ChecklistEngine:
             return "??:?? SL"
 
     def is_trading_session(self) -> bool:
-        """Check whether current SL time falls within the configured trading window."""
+        """Check whether current SL time falls within the configured trading window.
+
+        Handles midnight-spanning windows (e.g. start=22:00, end=02:00) using
+        the same logic as get_current_session.
+        """
         try:
             sl_tz = timezone(timedelta(hours=SL_UTC_OFFSET))
             sl_now = datetime.now(sl_tz)
@@ -96,8 +100,14 @@ class ChecklistEngine:
 
             start_h, start_m = map(int, TRADING_START_SL.split(":"))
             end_h, end_m = map(int, TRADING_END_SL.split(":"))
+            start_min = start_h * 60 + start_m
+            end_min = end_h * 60 + end_m
 
-            return (start_h * 60 + start_m) <= current < (end_h * 60 + end_m)
+            if start_min <= end_min:
+                return start_min <= current < end_min
+            else:
+                # window spans midnight (e.g. 22:00 – 02:00)
+                return current >= start_min or current < end_min
         except Exception as exc:
             logger.error("is_trading_session failed: %s", exc, exc_info=True)
             return False
@@ -174,9 +184,7 @@ class ChecklistEngine:
             layer2 = self._structure.get_layer2_result(current_price)
             layer3 = self._zones.get_layer3_result(current_price)
 
-            self._direction_confidence = None
-            direction = self._derive_direction(layer1, layer2)
-            direction_confidence = self._direction_confidence
+            direction, direction_confidence = self._derive_direction(layer1, layer2)
 
             layer4 = self._orderflow.get_layer4_result(direction, layer1)
 
@@ -191,7 +199,7 @@ class ChecklistEngine:
             entry_ready = False
             entry_confidence = None
             if score >= GRADE_B_SCORE and direction:
-                entry = self._entry.get_entry_result(direction, current_price)
+                entry = self._entry.get_entry_result(direction, current_price, zone_levels=layer3.get("all_levels", []))
                 entry_ready = entry.get("entry_ready", False)
                 entry_confidence = entry.get("entry_confidence")
 
@@ -237,10 +245,10 @@ class ChecklistEngine:
                 p = lvl.get("price")
                 if p is None:
                     continue
-                if lvl.get("type") == "eqh" and p > current_price and (p - current_price) <= 10:
+                if lvl.get("type") == "eqh" and p > current_price and (p - current_price) <= EQH_EQL_NEARBY_POINTS:
                     eqh_nearby = True
                     eqh_level = p
-                elif lvl.get("type") == "eql" and p < current_price and (current_price - p) <= 10:
+                elif lvl.get("type") == "eql" and p < current_price and (current_price - p) <= EQH_EQL_NEARBY_POINTS:
                     eql_nearby = True
                     eql_level = p
 
@@ -292,7 +300,9 @@ class ChecklistEngine:
 
     # ─── direction derivation ────────────────────────────────
 
-    def _derive_direction(self, layer1: Dict, layer2: Dict) -> Optional[str]:
+    def _derive_direction(
+        self, layer1: Dict, layer2: Dict
+    ) -> Tuple[Optional[str], Optional[str]]:
         """
         Derive trade direction from macro bias, H4 structure, and VIX.
 
@@ -302,8 +312,7 @@ class ChecklistEngine:
           3. EMA bias + macro OR VIX agree            (fallback when structure unclear)
           4. Structure alone when macro conflicts      (ICT: structure > macro)
 
-        Priority 4 is tagged via ``_direction_confidence`` so the decision
-        engine can apply conservative sizing.
+        Returns (direction, confidence) — no side effects on instance state.
         """
         macro_bias = layer1.get("bias")
         struct_bias = layer2.get("structure_bias")
@@ -311,29 +320,23 @@ class ChecklistEngine:
 
         # Priority 1 — full agreement
         if macro_bias == "SHORT" and struct_bias == "short":
-            self._direction_confidence = "high"
-            return "SHORT"
+            return "SHORT", "high"
         if macro_bias == "LONG" and struct_bias == "long":
-            self._direction_confidence = "high"
-            return "LONG"
+            return "LONG", "high"
 
         # Priority 2 — VIX direction + structure
         if vix_dir == "SELL_BIAS" and struct_bias == "short":
-            self._direction_confidence = "high"
-            return "SHORT"
+            return "SHORT", "high"
         if vix_dir == "BUY_BIAS" and struct_bias == "long":
-            self._direction_confidence = "high"
-            return "LONG"
+            return "LONG", "high"
 
         # Priority 3 — EMA + macro/VIX when structure unclear
         if struct_bias == "unclear":
             ema_bias = layer2.get("ema_bias")
             if ema_bias == "bearish" and (macro_bias == "SHORT" or vix_dir == "SELL_BIAS"):
-                self._direction_confidence = "medium"
-                return "SHORT"
+                return "SHORT", "medium"
             if ema_bias == "bullish" and (macro_bias == "LONG" or vix_dir == "BUY_BIAS"):
-                self._direction_confidence = "medium"
-                return "LONG"
+                return "LONG", "medium"
 
         # Priority 4 — Structure alone (macro conflicts or unavailable)
         # ICT principle: H4 structure is king. Macro modulates sizing, not direction.
@@ -341,25 +344,20 @@ class ChecklistEngine:
         if struct_bias in ("long", "short"):
             short_only = layer1.get("short_only", False)
             if struct_bias == "short":
-                self._direction_confidence = "reduced"
-                if short_only:
-                    # VIX 25-30 zone agrees with bearish structure — bump confidence
-                    self._direction_confidence = "medium"
+                confidence = "medium" if short_only else "reduced"
                 logger.info(
                     "Direction from structure alone: SHORT (macro=%s vix=%s confidence=%s)",
-                    macro_bias, vix_dir, self._direction_confidence,
+                    macro_bias, vix_dir, confidence,
                 )
-                return "SHORT"
+                return "SHORT", confidence
             if struct_bias == "long" and not short_only:
-                self._direction_confidence = "reduced"
                 logger.info(
                     "Direction from structure alone: LONG (macro=%s vix=%s confidence=%s)",
-                    macro_bias, vix_dir, self._direction_confidence,
+                    macro_bias, vix_dir, "reduced",
                 )
-                return "LONG"
+                return "LONG", "reduced"
 
-        self._direction_confidence = None
-        return None
+        return None, None
 
     # ─── filters ─────────────────────────────────────────────
 

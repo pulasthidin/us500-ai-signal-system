@@ -116,60 +116,84 @@ class TestScoring:
 
 
 class TestDirectionDerivation:
+    """_derive_direction returns (direction, confidence) tuple."""
+
     def test_macro_and_structure_agree_short(self, engine):
         layer1 = {"bias": "SHORT", "vix_direction_bias": "NEUTRAL"}
         layer2 = {"structure_bias": "short", "ema_bias": "bearish"}
-        assert engine._derive_direction(layer1, layer2) == "SHORT"
+        direction, confidence = engine._derive_direction(layer1, layer2)
+        assert direction == "SHORT"
+        assert confidence == "high"
 
     def test_macro_and_structure_agree_long(self, engine):
         layer1 = {"bias": "LONG", "vix_direction_bias": "NEUTRAL"}
         layer2 = {"structure_bias": "long", "ema_bias": "bullish"}
-        assert engine._derive_direction(layer1, layer2) == "LONG"
+        direction, confidence = engine._derive_direction(layer1, layer2)
+        assert direction == "LONG"
+        assert confidence == "high"
 
     def test_vix_tiebreak_short(self, engine):
         layer1 = {"bias": "MIXED", "vix_direction_bias": "SELL_BIAS"}
         layer2 = {"structure_bias": "short", "ema_bias": "bearish"}
-        assert engine._derive_direction(layer1, layer2) == "SHORT"
+        direction, confidence = engine._derive_direction(layer1, layer2)
+        assert direction == "SHORT"
+        assert confidence == "high"
 
     def test_vix_tiebreak_long(self, engine):
         layer1 = {"bias": "MIXED", "vix_direction_bias": "BUY_BIAS"}
         layer2 = {"structure_bias": "long", "ema_bias": "bullish"}
-        assert engine._derive_direction(layer1, layer2) == "LONG"
+        direction, confidence = engine._derive_direction(layer1, layer2)
+        assert direction == "LONG"
+        assert confidence == "high"
 
     def test_fallback_ema_bearish_plus_vix_sell(self, engine):
         layer1 = {"bias": "MIXED", "vix_direction_bias": "SELL_BIAS"}
         layer2 = {"structure_bias": "unclear", "ema_bias": "bearish"}
-        assert engine._derive_direction(layer1, layer2) == "SHORT"
+        direction, confidence = engine._derive_direction(layer1, layer2)
+        assert direction == "SHORT"
+        assert confidence == "medium"
 
     def test_fallback_ema_bullish_plus_macro_long(self, engine):
         layer1 = {"bias": "LONG", "vix_direction_bias": "NEUTRAL"}
         layer2 = {"structure_bias": "unclear", "ema_bias": "bullish"}
-        assert engine._derive_direction(layer1, layer2) == "LONG"
+        direction, confidence = engine._derive_direction(layer1, layer2)
+        assert direction == "LONG"
+        assert confidence == "medium"
 
     def test_fallback_ema_bearish_plus_macro_short(self, engine):
         layer1 = {"bias": "SHORT", "vix_direction_bias": "NEUTRAL"}
         layer2 = {"structure_bias": "unclear", "ema_bias": "bearish"}
-        assert engine._derive_direction(layer1, layer2) == "SHORT"
+        direction, confidence = engine._derive_direction(layer1, layer2)
+        assert direction == "SHORT"
+        assert confidence == "medium"
 
     def test_fallback_ema_bullish_plus_vix_buy(self, engine):
         layer1 = {"bias": "MIXED", "vix_direction_bias": "BUY_BIAS"}
         layer2 = {"structure_bias": "unclear", "ema_bias": "bullish"}
-        assert engine._derive_direction(layer1, layer2) == "LONG"
+        direction, confidence = engine._derive_direction(layer1, layer2)
+        assert direction == "LONG"
+        assert confidence == "medium"
 
     def test_no_direction_when_all_unclear(self, engine):
         layer1 = {"bias": "MIXED", "vix_direction_bias": "NEUTRAL"}
         layer2 = {"structure_bias": "unclear", "ema_bias": "unclear"}
-        assert engine._derive_direction(layer1, layer2) is None
+        direction, confidence = engine._derive_direction(layer1, layer2)
+        assert direction is None
+        assert confidence is None
 
     def test_no_direction_when_ema_conflicts_with_macro(self, engine):
         layer1 = {"bias": "LONG", "vix_direction_bias": "NEUTRAL"}
         layer2 = {"structure_bias": "unclear", "ema_bias": "bearish"}
-        assert engine._derive_direction(layer1, layer2) is None
+        direction, confidence = engine._derive_direction(layer1, layer2)
+        assert direction is None
+        assert confidence is None
 
     def test_no_direction_when_ema_missing(self, engine):
         layer1 = {"bias": "SHORT", "vix_direction_bias": "SELL_BIAS"}
         layer2 = {"structure_bias": "unclear"}
-        assert engine._derive_direction(layer1, layer2) is None
+        direction, confidence = engine._derive_direction(layer1, layer2)
+        assert direction is None
+        assert confidence is None
 
 
 class TestFilters:

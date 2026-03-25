@@ -6,6 +6,7 @@ All message formatting lives here so the rest of the app stays format-agnostic.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 from datetime import datetime, timezone, timedelta
@@ -292,24 +293,75 @@ class AlertBot:
         """Format the Sunday weekly performance summary."""
         try:
             wr = stats.get("win_rate", 0)
+            weekly = stats.get("weekly_summary", {})
+            this_week_wr = stats.get("this_week_win_rate", 0)
+            prev_week_wr = stats.get("prev_week_win_rate", 0)
             by_session = stats.get("by_session", {})
             by_grade = stats.get("by_grade", {})
+            by_direction = stats.get("by_direction", {})
+            tp_breakdown = stats.get("tp_source_breakdown", {})
+
+            # Win rate trend arrow
+            diff = this_week_wr - prev_week_wr
+            if abs(diff) < 2:
+                trend = "="
+            elif diff > 0:
+                trend = "+"
+            else:
+                trend = "-"
 
             lines = [
                 "\U0001f4ca WEEKLY REPORT",
                 "\u2501" * 20,
-                f"Win rate: {wr:.1f}%",
-                "",
-                "BY SESSION:",
             ]
-            for sess, data in by_session.items():
-                lines.append(f"  {sess}: {data.get('win_rate', 0):.0f}% ({data.get('total', 0)} signals)")
 
-            lines.append("")
-            lines.append("BY GRADE:")
-            for g, data in by_grade.items():
-                lines.append(f"  Grade {g}: {data.get('win_rate', 0):.0f}% ({data.get('total', 0)} signals)")
+            # ── This week summary ──
+            if weekly:
+                lines.append(
+                    f"This week: {weekly.get('total', 0)} signals  "
+                    f"{weekly.get('resolved', 0)} resolved  "
+                    f"PnL: {weekly.get('total_pnl', 0):+.1f} pts"
+                )
+            lines.append(f"Win rate (all-time): {wr:.1f}%")
+            lines.append(f"Win rate (this week): {this_week_wr:.1f}%  [{trend}{abs(diff):.1f}% vs prev week]")
 
+            # ── By direction ──
+            if by_direction:
+                lines.append("")
+                lines.append("LONG vs SHORT:")
+                for d in ("LONG", "SHORT"):
+                    data = by_direction.get(d)
+                    if data:
+                        lines.append(
+                            f"  {d}: {data['win_rate']:.0f}% "
+                            f"({data['wins']}/{data['total']})  "
+                            f"PnL: {data['total_pnl']:+.1f} pts"
+                        )
+
+            # ── By session ──
+            if by_session:
+                lines.append("")
+                lines.append("BY SESSION:")
+                for sess, data in by_session.items():
+                    lines.append(f"  {sess}: {data.get('win_rate', 0):.0f}% ({data.get('total', 0)} signals)")
+
+            # ── By grade ──
+            if by_grade:
+                lines.append("")
+                lines.append("BY GRADE:")
+                for g, data in by_grade.items():
+                    lines.append(f"  Grade {g}: {data.get('win_rate', 0):.0f}% ({data.get('total', 0)} signals)")
+
+            # ── TP source breakdown ──
+            if tp_breakdown:
+                lines.append("")
+                lines.append("TP METHOD:")
+                for src, data in tp_breakdown.items():
+                    lines.append(
+                        f"  {src}: {data['win_rate']:.0f}% ({data['wins']}/{data['total']})"
+                    )
+
+            # ── System health ──
             health = stats.get("system_health", {})
             if health:
                 lines.append("")
@@ -319,6 +371,7 @@ class AlertBot:
                     icon = "\u2705" if ok else "\u274c"
                     lines.append(f"  {comp}: {icon}")
 
+            # ── ML features ──
             shap_report = stats.get("shap_report")
             if shap_report:
                 lines.append("")
@@ -326,6 +379,7 @@ class AlertBot:
                 for feat in shap_report[:5]:
                     lines.append(f"  {feat}")
 
+            # ── Evolution ──
             evo = stats.get("evolution")
             if evo:
                 lines.append("")
@@ -333,6 +387,7 @@ class AlertBot:
                 lines.append(f"  Stage: {evo.get('stage', 0)}")
                 lines.append(f"  Signals: {evo.get('signal_count', 0)}")
 
+            # ── Pattern scanner ──
             pa_stats = stats.get("pattern_accuracy")
             if pa_stats and pa_stats.get("total_alerts", 0) > 0:
                 lines.append("")
@@ -408,7 +463,8 @@ class AlertBot:
     def send_system_alert(self, level: str, component: str, message: str) -> None:
         """Send a system alert to the SYSTEM channel with dedup."""
         try:
-            cache_key = f"{level}:{component}:{message[:50]}"
+            msg_hash = hashlib.md5(message.encode("utf-8", errors="replace"), usedforsecurity=False).hexdigest()
+            cache_key = f"{level}:{component}:{msg_hash}"
             now = time.time()
             last_sent = self._system_alert_cache.get(cache_key, 0)
             if now - last_sent < SYSTEM_ALERT_DEDUP_MINUTES * 60:

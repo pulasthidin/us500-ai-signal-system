@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS signals (
     tp_price REAL,
     sl_points REAL,
     tp_points REAL,
+    tp_source TEXT,
 
     outcome TEXT DEFAULT NULL,
     outcome_label INTEGER DEFAULT NULL,
@@ -136,6 +137,7 @@ class SignalLogger:
         try:
             os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
             with sqlite3.connect(self._db_path) as conn:
+                conn.execute("PRAGMA journal_mode=WAL")  # persists to file after first set
                 conn.execute(CREATE_SIGNALS_TABLE_SQL)
                 conn.execute(CREATE_PATTERN_ALERTS_TABLE_SQL)
                 self._run_migrations(conn)
@@ -152,6 +154,7 @@ class SignalLogger:
         migrations = [
             ("entry_confidence", "TEXT"),
             ("direction_confidence", "TEXT"),
+            ("tp_source", "TEXT"),
         ]
         for col_name, col_type in migrations:
             if col_name not in existing:
@@ -161,8 +164,9 @@ class SignalLogger:
     # ─── helpers ─────────────────────────────────────────────
 
     def _connect(self) -> sqlite3.Connection:
+        # WAL mode is set once in init_db and persists in the database file;
+        # no need to re-issue the pragma on every connection.
         conn = sqlite3.connect(self._db_path, timeout=10)
-        conn.execute("PRAGMA journal_mode=WAL")
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -181,7 +185,6 @@ class SignalLogger:
         try:
             with conn:
                 conn.execute(sql, params)
-                conn.commit()
         finally:
             conn.close()
 
@@ -221,7 +224,7 @@ class SignalLogger:
                             delta_direction, divergence, vix_spiking_now, confirms_bias,
                             fvg_present, fvg_top, fvg_bottom, m5_bos, ustec_agrees, rr, atr,
                             score, entry_ready, entry_confidence, direction_confidence, direction, decision, grade, size_label, caution_flags,
-                            entry_price, sl_price, tp_price, sl_points, tp_points,
+                            entry_price, sl_price, tp_price, sl_points, tp_points, tp_source,
                             save_status
                         ) VALUES (
                             ?, ?, ?, ?, ?, ?, ?,
@@ -233,7 +236,7 @@ class SignalLogger:
                             ?, ?, ?, ?,
                             ?, ?, ?, ?, ?, ?, ?,
                             ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                            ?, ?, ?, ?, ?,
+                            ?, ?, ?, ?, ?, ?,
                             ?
                         )
                         """,
@@ -306,6 +309,7 @@ class SignalLogger:
                             entry.get("tp_price"),
                             entry.get("sl_points"),
                             entry.get("tp_points"),
+                            entry.get("tp_source"),
 
                             "complete",
                         ),
@@ -455,6 +459,83 @@ class SignalLogger:
             logger.error("get_stats_by_grade failed: %s", exc, exc_info=True)
             return {}
 
+    def get_stats_by_direction(self) -> Dict[str, Any]:
+        """Win rate and PnL broken down by LONG vs SHORT."""
+        try:
+            rows = self._query("""
+                SELECT direction, COUNT(*) as total,
+                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN') THEN 1 ELSE 0 END) as wins,
+                       SUM(COALESCE(pnl_points, 0)) as total_pnl
+                FROM signals WHERE outcome IS NOT NULL AND direction IS NOT NULL GROUP BY direction
+            """)
+            return {
+                r["direction"]: {
+                    "total": r["total"], "wins": r["wins"],
+                    "win_rate": round(r["wins"] / r["total"] * 100, 1) if r["total"] > 0 else 0,
+                    "total_pnl": round(r["total_pnl"], 1),
+                }
+                for r in rows
+            }
+        except Exception as exc:
+            logger.error("get_stats_by_direction failed: %s", exc, exc_info=True)
+            return {}
+
+    def get_tp_source_breakdown(self) -> Dict[str, Any]:
+        """Win rate per TP method (eqh, eql, pdh, pdl, round, poc, atr)."""
+        try:
+            rows = self._query("""
+                SELECT tp_source, COUNT(*) as total,
+                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN') THEN 1 ELSE 0 END) as wins
+                FROM signals WHERE outcome IS NOT NULL AND tp_source IS NOT NULL GROUP BY tp_source
+                ORDER BY total DESC
+            """)
+            return {
+                r["tp_source"]: {
+                    "total": r["total"], "wins": r["wins"],
+                    "win_rate": round(r["wins"] / r["total"] * 100, 1) if r["total"] > 0 else 0,
+                }
+                for r in rows
+            }
+        except Exception as exc:
+            logger.error("get_tp_source_breakdown failed: %s", exc, exc_info=True)
+            return {}
+
+    def get_weekly_summary(self, since_iso: str) -> Dict[str, Any]:
+        """Total signals, resolved count, PnL, and win rate since *since_iso*."""
+        try:
+            row = self._query("""
+                SELECT COUNT(*) as total,
+                       SUM(CASE WHEN outcome IS NOT NULL THEN 1 ELSE 0 END) as resolved,
+                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN') THEN 1 ELSE 0 END) as wins,
+                       SUM(COALESCE(pnl_points, 0)) as total_pnl
+                FROM signals WHERE timestamp >= ?
+            """, (since_iso,), fetchall=False)
+            total = row["total"] or 0
+            resolved = row["resolved"] or 0
+            wins = row["wins"] or 0
+            total_pnl = round(row["total_pnl"] or 0.0, 1)
+            win_rate = round(wins / resolved * 100, 1) if resolved > 0 else 0.0
+            return {"total": total, "resolved": resolved, "wins": wins,
+                    "total_pnl": total_pnl, "win_rate": win_rate}
+        except Exception as exc:
+            logger.error("get_weekly_summary failed: %s", exc, exc_info=True)
+            return {"total": 0, "resolved": 0, "wins": 0, "total_pnl": 0.0, "win_rate": 0.0}
+
+    def get_win_rate_since(self, since_iso: str) -> float:
+        """Win rate for signals resolved since *since_iso* (used for trend comparison)."""
+        try:
+            row = self._query("""
+                SELECT COUNT(*) as total,
+                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN') THEN 1 ELSE 0 END) as wins
+                FROM signals WHERE outcome IS NOT NULL AND timestamp >= ?
+            """, (since_iso,), fetchall=False)
+            if not row or not row["total"]:
+                return 0.0
+            return round(row["wins"] / row["total"] * 100, 1)
+        except Exception as exc:
+            logger.error("get_win_rate_since failed: %s", exc, exc_info=True)
+            return 0.0
+
     # ─── crash recovery ────────────────────────────────────────
 
     def get_all_null_outcome_signals(self) -> List[Dict[str, Any]]:
@@ -535,7 +616,6 @@ class SignalLogger:
                     (data.get("timestamp", datetime.now(timezone.utc).isoformat()),
                      data.get("win_probability"), data.get("snapshot_json"), data.get("direction")),
                 )
-                conn.commit()
                 pa_id = cursor.lastrowid
             logger.info("Logged pattern alert id=%d", pa_id)
             return pa_id

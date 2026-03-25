@@ -38,6 +38,7 @@ test_live.py
 
 # ─── Logs ────────────────────────────────────
 logs/*.log
+logs/*.log.*
 
 # ─── Claude Code ─────────────────────────────
 .claude/

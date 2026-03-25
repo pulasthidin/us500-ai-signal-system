@@ -13,6 +13,7 @@ Bonus (confidence boosters — affect grade, not entry readiness):
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, Optional
 
 import os
@@ -25,6 +26,7 @@ from config import (
     ATR_PERIOD,
     MIN_RR,
     SL_ATR_MULTIPLIER,
+    SL_MIN_ATR_MULTIPLIER,
     TP_ATR_MULTIPLIER,
 )
 
@@ -44,11 +46,15 @@ class EntryChecker:
     Hard gate: FVG + R:R.  Bonus: BOS + SMT (affect confidence/grade).
     """
 
+    _M15_CACHE_TTL: float = 60.0  # seconds — matches SIGNAL_CHECK_INTERVAL_SECONDS
+
     def __init__(self, ctrader_connection, us500_id: int, ustec_id: int, alert_bot=None) -> None:
         self._ctrader = ctrader_connection
         self._us500_id = us500_id
         self._ustec_id = ustec_id
         self._alert_bot = alert_bot
+        self._m15_cache: Optional[pd.DataFrame] = None
+        self._m15_cache_ts: float = 0.0
 
     # ─── bar fetching ────────────────────────────────────────
 
@@ -66,6 +72,21 @@ class EntryChecker:
             return self._ctrader.fetch_bars(self._ustec_id, "M5", count)
         except Exception as exc:
             logger.error("get_m5_ustec_bars failed: %s", exc, exc_info=True)
+            return None
+
+    def _get_m15_bars(self, count: int = 50) -> Optional[pd.DataFrame]:
+        """Fetch M15 bars with a TTL cache to avoid a redundant API call every tick."""
+        try:
+            now = time.monotonic()
+            if self._m15_cache is not None and (now - self._m15_cache_ts) < self._M15_CACHE_TTL:
+                return self._m15_cache
+            df = self._ctrader.fetch_bars(self._us500_id, "M15", count)
+            if df is not None and not df.empty:
+                self._m15_cache = df
+                self._m15_cache_ts = now
+            return df
+        except Exception as exc:
+            logger.error("_get_m15_bars failed: %s", exc, exc_info=True)
             return None
 
     # ─── FVG detection ───────────────────────────────────────
@@ -230,7 +251,14 @@ class EntryChecker:
     def _fvg_result(self, df: pd.DataFrame, idx: int, top: float, bottom: float, direction: str) -> Dict[str, Any]:
         """Build an FVG result dict."""
         midpoint = (top + bottom) / 2
-        bars_ago = max(0, len(df) - 1 - int(idx))
+        try:
+            pos = df.index.get_loc(idx)
+            # get_loc can return a slice or array for duplicate indices — fall back to int
+            if not isinstance(pos, int):
+                pos = int(idx)
+        except (KeyError, TypeError):
+            pos = int(idx)
+        bars_ago = max(0, len(df) - 1 - pos)
         return {
             "present": True,
             "top": round(top, 2),
@@ -360,38 +388,182 @@ class EntryChecker:
             logger.error("calculate_atr failed: %s", exc, exc_info=True)
             return 0.0
 
+    # ─── SL swing detection ──────────────────────────────────
+
+    def _detect_swing_sl(
+        self, df: pd.DataFrame, direction: str, atr: float, n_bars: int = 5
+    ) -> Optional[float]:
+        """
+        Find the structural SL from the recent swing that created the setup.
+
+        SHORT: highest high of the last n_bars M5 candles.
+               Price closing above this means the bearish rejection never happened.
+        LONG:  lowest low of the last n_bars M5 candles.
+               Price closing below this means the bullish sweep never happened.
+
+        A small 0.1×ATR buffer is added so the SL sits just beyond the wick,
+        not on it (avoids exact-level fills triggering the SL).
+
+        Returns SL price or None if insufficient data.
+        """
+        try:
+            if df is None or len(df) < n_bars:
+                return None
+
+            recent = df.tail(n_bars)
+            buffer = 0.1 * atr
+
+            if direction.upper() == "SHORT":
+                swing_high = float(recent["high"].max())
+                sl = round(swing_high + buffer, 2)
+                logger.info("Swing SL (SHORT): %.2f  (swing_high=%.2f + buffer=%.2f)", sl, swing_high, buffer)
+                return sl
+            else:
+                swing_low = float(recent["low"].min())
+                sl = round(swing_low - buffer, 2)
+                logger.info("Swing SL (LONG): %.2f  (swing_low=%.2f - buffer=%.2f)", sl, swing_low, buffer)
+                return sl
+
+        except Exception as exc:
+            logger.error("_detect_swing_sl failed: %s", exc, exc_info=True)
+            return None
+
     # ─── R:R calculation ─────────────────────────────────────
 
+    def _select_tp(
+        self,
+        current_price: float,
+        direction: str,
+        atr: float,
+        sl_distance: float,
+        zone_levels: list,
+    ):
+        """
+        Pick the best TP from structure levels in SMC priority order.
+
+        SHORT priority: EQL → PDL → round level → POC
+        LONG  priority: EQH → PDH → round level → POC
+
+        Constraints:
+          - TP must be no further than ATR×3.0 (reachability cap)
+          - Resulting R:R must be >= MIN_RR  (this naturally filters noise-close TPs)
+
+        No minimum ATR distance — R:R check already prevents TP being too close.
+        Within the same type, the NEAREST qualifying level wins (most achievable).
+        Returns (tp_price, tp_source) or (None, None) — caller falls back to ATR×2.5.
+        """
+        if not zone_levels or atr <= 0 or sl_distance <= 0:
+            return None, None
+
+        max_dist = atr * 3.0
+
+        if direction.upper() == "SHORT":
+            TYPE_PRIORITY = {"eql": 4, "pdl": 3, "round": 2, "poc": 1}
+            candidates = [
+                lvl for lvl in zone_levels
+                if lvl.get("type") in TYPE_PRIORITY
+                and lvl.get("price") is not None
+                and lvl["price"] < current_price
+                and (current_price - lvl["price"]) <= max_dist
+            ]
+            candidates.sort(key=lambda x: (-TYPE_PRIORITY[x["type"]], current_price - x["price"]))
+        else:
+            TYPE_PRIORITY = {"eqh": 4, "pdh": 3, "round": 2, "poc": 1}
+            candidates = [
+                lvl for lvl in zone_levels
+                if lvl.get("type") in TYPE_PRIORITY
+                and lvl.get("price") is not None
+                and lvl["price"] > current_price
+                and (lvl["price"] - current_price) <= max_dist
+            ]
+            candidates.sort(key=lambda x: (-TYPE_PRIORITY[x["type"]], x["price"] - current_price))
+
+        for lvl in candidates:
+            tp_dist = abs(current_price - lvl["price"])
+            rr = tp_dist / sl_distance
+            if rr >= MIN_RR:
+                logger.info(
+                    "Smart TP selected: %.2f  type=%s  dist=%.1f pts  RR=%.2f",
+                    lvl["price"], lvl["type"], tp_dist, rr,
+                )
+                return round(lvl["price"], 2), lvl["type"]
+
+        return None, None
+
     def calculate_rr(
-        self, current_price: float, direction: str, atr: float, fvg_edge: Optional[float] = None,
+        self,
+        current_price: float,
+        direction: str,
+        atr: float,
+        fvg_edge: Optional[float] = None,
+        zone_levels: Optional[list] = None,
+        swing_sl: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Compute SL/TP prices and R:R ratio.
 
-        When *fvg_edge* (the invalidation level from the FVG) is provided, SL is
-        placed just beyond it with a small ATR buffer (0.3 * ATR) instead of the
-        fixed ATR multiplier.  This produces a variable R:R that actually filters.
+        SL priority:
+          1. Swing high/low of last 5 M5 bars (structural invalidation — primary)
+          2. FVG edge + 0.3×ATR buffer (if no swing SL available)
+          3. ATR×1.5 fallback (if neither available)
+          Floor: 1.0×ATR minimum in all cases — prevents noise stops.
+
+        TP: selected from structure levels in SMC priority order (EQL/PDL/round/POC).
+            Falls back to ATR×2.5 when no qualifying level exists.
         """
         try:
-            tp_distance = TP_ATR_MULTIPLIER * atr
             atr_buffer = 0.3 * atr
 
-            if fvg_edge is not None and atr > 0:
+            # ── SL placement ──
+            if swing_sl is not None:
+                # Primary: structural swing level
+                sl_price = swing_sl
+                sl_distance = abs(current_price - sl_price)
+            elif fvg_edge is not None and atr > 0:
+                # Secondary: FVG edge with buffer
                 if direction.upper() == "SHORT":
                     sl_price = fvg_edge + atr_buffer
-                    tp_price = current_price - tp_distance
                 else:
                     sl_price = fvg_edge - atr_buffer
-                    tp_price = current_price + tp_distance
                 sl_distance = abs(current_price - sl_price)
             else:
+                # Fallback: fixed ATR multiple
                 sl_distance = SL_ATR_MULTIPLIER * atr
                 if direction.upper() == "SHORT":
                     sl_price = current_price + sl_distance
-                    tp_price = current_price - tp_distance
                 else:
                     sl_price = current_price - sl_distance
-                    tp_price = current_price + tp_distance
 
+            # Floor: 1.0×ATR minimum regardless of SL source
+            min_sl_distance = SL_MIN_ATR_MULTIPLIER * atr
+            if sl_distance < min_sl_distance:
+                sl_distance = min_sl_distance
+                if direction.upper() == "SHORT":
+                    sl_price = current_price + sl_distance
+                else:
+                    sl_price = current_price - sl_distance
+                logger.info(
+                    "SL floored to %.1f×ATR: %.2f (swing/FVG was too close to entry)",
+                    SL_MIN_ATR_MULTIPLIER, sl_price,
+                )
+
+            # ── Smart TP: structure-level priority ──
+            smart_tp, tp_source = self._select_tp(
+                current_price, direction, atr, sl_distance, zone_levels or []
+            )
+
+            if smart_tp is not None:
+                tp_price = smart_tp
+            else:
+                tp_source = "atr"
+                tp_fallback = TP_ATR_MULTIPLIER * atr
+                tp_price = (
+                    (current_price - tp_fallback)
+                    if direction.upper() == "SHORT"
+                    else (current_price + tp_fallback)
+                )
+                logger.info("TP fallback to ATR×%.1f = %.2f", TP_ATR_MULTIPLIER, tp_price)
+
+            tp_distance = abs(current_price - tp_price)
             rr = (tp_distance / sl_distance) if sl_distance > 0 else 0.0
 
             return {
@@ -401,15 +573,16 @@ class EntryChecker:
                 "sl_points": round(sl_distance, 2),
                 "tp_points": round(tp_distance, 2),
                 "atr_value": round(atr, 2),
+                "tp_source": tp_source,
             }
 
         except Exception as exc:
             logger.error("calculate_rr failed: %s", exc, exc_info=True)
-            return {"sl_price": 0, "tp_price": 0, "rr": 0, "sl_points": 0, "tp_points": 0, "atr_value": 0}
+            return {"sl_price": 0, "tp_price": 0, "rr": 0, "sl_points": 0, "tp_points": 0, "atr_value": 0, "tp_source": "error"}
 
     # ─── composite entry check ───────────────────────────────
 
-    def get_entry_result(self, direction: str, current_price: float) -> Dict[str, Any]:
+    def get_entry_result(self, direction: str, current_price: float, zone_levels: Optional[list] = None) -> Dict[str, Any]:
         """
         Run M5 entry conditions.
 
@@ -436,7 +609,7 @@ class EntryChecker:
             if us500_df is None or us500_df.empty:
                 return self._empty_entry()
 
-            m15_df = self._ctrader.fetch_bars(self._us500_id, "M15", 50)
+            m15_df = self._get_m15_bars(50)
             atr = self.calculate_atr(m15_df if m15_df is not None and not m15_df.empty else us500_df)
 
             fvg = self.detect_m5_fvg(us500_df, direction, atr=atr)
@@ -446,7 +619,14 @@ class EntryChecker:
             fvg_edge = None
             if fvg.get("present"):
                 fvg_edge = fvg.get("bottom") if direction.upper() == "LONG" else fvg.get("top")
-            rr_info = self.calculate_rr(current_price, direction, atr, fvg_edge=fvg_edge)
+
+            swing_sl = self._detect_swing_sl(us500_df, direction, atr)
+            rr_info = self.calculate_rr(
+                current_price, direction, atr,
+                fvg_edge=fvg_edge,
+                zone_levels=zone_levels,
+                swing_sl=swing_sl,
+            )
             rr_valid = rr_info["rr"] >= MIN_RR
 
             # ── Hard gate: FVG + R:R ──
@@ -486,6 +666,7 @@ class EntryChecker:
                 "sl_points": rr_info["sl_points"],
                 "tp_points": rr_info["tp_points"],
                 "atr": rr_info["atr_value"],
+                "tp_source": rr_info["tp_source"],
             }
 
         except Exception as exc:
@@ -505,6 +686,7 @@ class EntryChecker:
             "ustec_details": {"agrees": False, "us500_swing": "unknown", "ustec_swing": "unknown", "divergence_type": None},
             "rr_valid": False, "entry_ready": False, "entry_confidence": None,
             "sl_price": 0, "tp_price": 0, "rr": 0, "sl_points": 0, "tp_points": 0, "atr": 0,
+            "tp_source": None,
         }
 
     def _send_system_alert(self, level: str, component: str, message: str) -> None:

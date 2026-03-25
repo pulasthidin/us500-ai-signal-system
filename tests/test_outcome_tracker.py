@@ -151,10 +151,11 @@ class TestStartupCatchup:
         assert result["wins"] == 0
 
     def test_skips_young_signals(self, tracker):
+        # signal 10 minutes old — well under the 30-minute OUTCOME_CHECK_DELAY_SECONDS threshold
         now = datetime.now(timezone.utc)
         young = {"id": 1, "direction": "LONG", "entry_price": 6500,
                  "sl_price": 6485, "tp_price": 6525,
-                 "timestamp": (now - timedelta(minutes=30)).isoformat()}
+                 "timestamp": (now - timedelta(minutes=10)).isoformat()}
         tracker._signal_logger.get_all_null_outcome_signals.return_value = [young]
         result = tracker.run_startup_catchup()
         assert result["skipped"] == 1
@@ -164,7 +165,7 @@ class TestStartupCatchup:
         now = datetime.now(timezone.utc)
         old_signal = {"id": 1, "direction": "LONG", "entry_price": 6500,
                       "sl_price": 6485, "tp_price": 6525,
-                      "timestamp": (now - timedelta(hours=5)).isoformat()}
+                      "timestamp": (now - timedelta(hours=8)).isoformat()}
         tracker._signal_logger.get_all_null_outcome_signals.return_value = [old_signal]
         result = tracker.run_startup_catchup()
         assert result["checked"] >= 0

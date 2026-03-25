@@ -51,6 +51,7 @@ def _make_result(direction="LONG", price=6500.0, score=4, decision="FULL_SEND", 
             "rr": 2.5, "atr": 10.0,
             "sl_price": 6485.0, "tp_price": 6525.0,
             "sl_points": 15.0, "tp_points": 25.0,
+            "tp_source": "atr",
         },
         "score": score,
         "entry_ready": True,
@@ -79,6 +80,26 @@ class TestLogSignal:
         id1 = logger_db.log_signal(_make_result())
         id2 = logger_db.log_signal(_make_result(direction="SHORT"))
         assert id2 > id1
+
+    def test_tp_source_saved(self, logger_db):
+        import sqlite3
+        sid = logger_db.log_signal(_make_result())
+        conn = sqlite3.connect(logger_db._db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT tp_source FROM signals WHERE id=?", (sid,)).fetchone()
+        conn.close()
+        assert row["tp_source"] == "atr"
+
+    def test_tp_source_none_when_not_provided(self, logger_db):
+        import sqlite3
+        result = _make_result()
+        result["entry"]["tp_source"] = None
+        sid = logger_db.log_signal(result)
+        conn = sqlite3.connect(logger_db._db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT tp_source FROM signals WHERE id=?", (sid,)).fetchone()
+        conn.close()
+        assert row["tp_source"] is None
 
 
 class TestOutcomeUpdate:
