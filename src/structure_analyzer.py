@@ -15,7 +15,15 @@ import pandas as pd
 import pandas_ta as ta
 from smartmoneyconcepts import smc
 
-from config import H4_BOS_SWING_LENGTH, US500_SYMBOL
+from config import (
+    ADX_PERIOD,
+    ADX_RANGE_THRESHOLD,
+    ATR_COMPRESSION_LOOKBACK,
+    ATR_COMPRESSION_RATIO,
+    H4_BOS_SWING_LENGTH,
+    RANGE_LOOKBACK_BARS,
+    US500_SYMBOL,
+)
 
 os.makedirs("logs", exist_ok=True)
 
@@ -49,6 +57,109 @@ class StructureAnalyzer:
             logger.error("get_h4_bars failed: %s", exc, exc_info=True)
             self._send_system_alert("WARNING", "h4_bars", str(exc))
             return None
+
+    def get_h1_bars(self, count: int = 48) -> Optional[pd.DataFrame]:
+        """Fetch H1 bars for range detection."""
+        try:
+            df = self._ctrader.fetch_bars(self._us500_id, "H1", count)
+            if df is None or df.empty:
+                logger.warning("No H1 bars returned for range detection")
+                return None
+            return df
+        except Exception as exc:
+            logger.error("get_h1_bars failed: %s", exc, exc_info=True)
+            self._send_system_alert("WARNING", "h1_bars", str(exc))
+            return None
+
+    # ─── range / consolidation detection ─────────────────────
+
+    def detect_range_condition(self) -> Dict[str, Any]:
+        """
+        Detect whether the market is in a consolidation / ranging state.
+
+        Uses H1 bars with two complementary methods:
+          1. ADX < threshold → directional strength is weak
+          2. ATR compression → current ATR shrinking vs rolling average
+
+        When both confirm, the market is definitively ranging.
+        When only one confirms, it's a "mild range" (caution, not hard block).
+
+        Also computes the range boundaries (H1 high/low of recent bars) so the
+        entry checker can place SL beyond the range when appropriate.
+        """
+        try:
+            df = self.get_h1_bars(max(ATR_COMPRESSION_LOOKBACK * 2, 48))
+            if df is None or len(df) < ADX_PERIOD + 5:
+                return self._empty_range()
+
+            adx_series = ta.adx(df["high"], df["low"], df["close"], length=ADX_PERIOD)
+            adx_val = None
+            if adx_series is not None and not adx_series.empty:
+                adx_col = [c for c in adx_series.columns if "ADX" in c.upper() and "DM" not in c.upper()]
+                if adx_col:
+                    adx_raw = adx_series[adx_col[0]].dropna()
+                    if not adx_raw.empty:
+                        adx_val = float(adx_raw.iloc[-1])
+
+            atr_series = ta.atr(df["high"], df["low"], df["close"], length=14)
+            atr_compressing = False
+            atr_ratio = 1.0
+            if atr_series is not None and not atr_series.dropna().empty:
+                atr_values = atr_series.dropna()
+                current_atr = float(atr_values.iloc[-1])
+                lookback = min(ATR_COMPRESSION_LOOKBACK, len(atr_values))
+                avg_atr = float(atr_values.iloc[-lookback:].mean())
+                if avg_atr > 0:
+                    atr_ratio = current_atr / avg_atr
+                    atr_compressing = atr_ratio < ATR_COMPRESSION_RATIO
+
+            adx_ranging = adx_val is not None and adx_val < ADX_RANGE_THRESHOLD
+
+            if adx_ranging and atr_compressing:
+                is_ranging = True
+                range_strength = "strong"
+            elif adx_ranging or atr_compressing:
+                is_ranging = True
+                range_strength = "mild"
+            else:
+                is_ranging = False
+                range_strength = "none"
+
+            recent = df.tail(RANGE_LOOKBACK_BARS)
+            range_high = float(recent["high"].max())
+            range_low = float(recent["low"].min())
+
+            logger.info(
+                "Range check: ADX=%.1f(%s) ATR_ratio=%.2f(%s) -> %s (%s) range=[%.1f, %.1f]",
+                adx_val or 0, "ranging" if adx_ranging else "trending",
+                atr_ratio, "compressing" if atr_compressing else "normal",
+                "RANGING" if is_ranging else "TRENDING", range_strength,
+                range_low, range_high,
+            )
+
+            return {
+                "is_ranging": is_ranging,
+                "range_strength": range_strength,
+                "adx_value": round(adx_val, 2) if adx_val is not None else None,
+                "adx_ranging": adx_ranging,
+                "atr_compressing": atr_compressing,
+                "atr_ratio": round(atr_ratio, 3),
+                "range_high": round(range_high, 2),
+                "range_low": round(range_low, 2),
+            }
+
+        except Exception as exc:
+            logger.error("detect_range_condition failed: %s", exc, exc_info=True)
+            return self._empty_range()
+
+    @staticmethod
+    def _empty_range() -> Dict[str, Any]:
+        return {
+            "is_ranging": False, "range_strength": "none",
+            "adx_value": None, "adx_ranging": False,
+            "atr_compressing": False, "atr_ratio": 1.0,
+            "range_high": None, "range_low": None,
+        }
 
     # ─── EMAs ────────────────────────────────────────────────
 
@@ -335,7 +446,7 @@ class StructureAnalyzer:
 
     def get_layer2_result(self, current_price: float) -> Dict[str, Any]:
         """
-        Run full H4 structure analysis.
+        Run full H4 structure analysis + H1 range detection.
         Layer passes when EMA bias + BOS direction agree.
         """
         try:
@@ -345,12 +456,12 @@ class StructureAnalyzer:
 
             df = self.calculate_emas(df)
             ema_result = self.get_price_vs_emas(current_price, df)
-            # Compute BOS/ChoCH data once — both methods read the same result.
             bos_choch_data = self._compute_bos_choch(df)
             bos_result = self.detect_bos(df, bos_choch=bos_choch_data)
             choch_result = self.detect_choch(df, bos_choch=bos_choch_data)
             wyckoff = self.detect_wyckoff(df)
             ob_result = self.detect_order_blocks(df, bos_result, current_price)
+            range_condition = self.detect_range_condition()
 
             ema_bias = ema_result["ema_bias"]
             bos_dir = bos_result["direction"]
@@ -397,6 +508,7 @@ class StructureAnalyzer:
                 "ob_bearish_nearby": ob_result["ob_bearish_nearby"],
                 "bullish_obs": ob_result["bullish_obs"],
                 "bearish_obs": ob_result["bearish_obs"],
+                "range_condition": range_condition,
             }
 
         except Exception as exc:
@@ -415,6 +527,7 @@ class StructureAnalyzer:
             "score_contribution": 0,
             "ob_bullish_nearby": False, "ob_bearish_nearby": False,
             "bullish_obs": [], "bearish_obs": [],
+            "range_condition": self._empty_range(),
         }
 
     def _send_system_alert(self, level: str, component: str, message: str) -> None:

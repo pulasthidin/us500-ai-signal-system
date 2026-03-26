@@ -316,3 +316,212 @@ class TestTransactionalSave:
         row = conn.execute("SELECT save_status FROM signals ORDER BY id DESC LIMIT 1").fetchone()
         conn.close()
         assert row["save_status"] == "complete"
+
+
+# ─── New columns (range, sweep, displacement, ML features) ─────
+
+def _make_result_v2(direction="LONG", price=6500.0, score=4, decision="FULL_SEND", grade="A"):
+    """Full result dict including all v2 columns."""
+    base = _make_result(direction, price, score, decision, grade)
+    base["range_condition"] = {
+        "is_ranging": True, "range_strength": "strong",
+        "adx_value": 15.3, "adx_ranging": True,
+        "atr_compressing": True, "atr_ratio": 0.65,
+        "range_high": 6530.0, "range_low": 6470.0,
+    }
+    base["is_ranging"] = True
+    base["has_liquidity_sweep"] = True
+    base["layer2"]["range_condition"] = base["range_condition"]
+    base["layer2"]["ob_bullish_nearby"] = True
+    base["layer2"]["ob_bearish_nearby"] = False
+    base["layer3"]["asian_range"] = {"asian_high": 6510.0, "asian_low": 6490.0, "valid": True}
+    base["layer3"]["liquidity_sweeps"] = [
+        {"level_price": 6470.0, "level_type": "pdl", "sweep_side": "sell_side", "bars_ago": 5}
+    ]
+    base["entry"] = {
+        "fvg_present": True,
+        "fvg_details": {"top": 6510.0, "bottom": 6505.0, "age_bars": 3, "displacement_valid": True},
+        "m5_bos_confirmed": True, "ustec_agrees": True,
+        "rr": 2.5, "atr": 10.0,
+        "sl_price": 6465.0, "tp_price": 6525.0,
+        "sl_points": 35.0, "tp_points": 25.0,
+        "tp_source": "eqh",
+        "displacement_valid": True,
+        "has_liquidity_sweep": True,
+        "sweep_details": {"level_type": "pdl", "sweep_side": "sell_side", "bars_ago": 5},
+        "sl_method": "range",
+        "entry_confidence": "full",
+    }
+    base["entry_confidence"] = "full"
+    base["direction_confidence"] = "high"
+    return base
+
+
+class TestNewColumnsV2:
+    def test_log_signal_stores_range_data(self, logger_db):
+        import sqlite3
+        sid = logger_db.log_signal(_make_result_v2())
+        assert sid is not None
+        conn = sqlite3.connect(logger_db._db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM signals WHERE id = ?", (sid,)).fetchone()
+        conn.close()
+        assert row["is_ranging"] == 1
+        assert row["range_strength"] == "strong"
+        assert abs(row["adx_value"] - 15.3) < 0.1
+        assert row["atr_compressing"] == 1
+
+    def test_log_signal_stores_sweep_data(self, logger_db):
+        import sqlite3
+        sid = logger_db.log_signal(_make_result_v2())
+        conn = sqlite3.connect(logger_db._db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM signals WHERE id = ?", (sid,)).fetchone()
+        conn.close()
+        assert row["has_liquidity_sweep"] == 1
+        assert row["sweep_side"] == "sell_side"
+        assert row["sweep_level_type"] == "pdl"
+        assert row["sweep_bars_ago"] == 5
+
+    def test_log_signal_stores_displacement(self, logger_db):
+        import sqlite3
+        sid = logger_db.log_signal(_make_result_v2())
+        conn = sqlite3.connect(logger_db._db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM signals WHERE id = ?", (sid,)).fetchone()
+        conn.close()
+        assert row["displacement_valid"] == 1
+        assert row["sl_method"] == "range"
+
+    def test_log_signal_stores_computed_features(self, logger_db):
+        import sqlite3
+        sid = logger_db.log_signal(_make_result_v2())
+        conn = sqlite3.connect(logger_db._db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM signals WHERE id = ?", (sid,)).fetchone()
+        conn.close()
+        assert row["fvg_age_bars"] == 3
+        assert abs(row["fvg_size_points"] - 5.0) < 0.1
+        assert abs(row["range_size_points"] - 60.0) < 0.1
+        assert row["price_in_range_pct"] is not None
+        assert 0 <= row["price_in_range_pct"] <= 100
+        assert abs(row["asian_range_size"] - 20.0) < 0.1
+        assert row["hour_utc"] is not None
+
+    def test_data_version_is_2_for_new_signals(self, logger_db):
+        import sqlite3
+        sid = logger_db.log_signal(_make_result_v2())
+        conn = sqlite3.connect(logger_db._db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT data_version FROM signals WHERE id = ?", (sid,)).fetchone()
+        conn.close()
+        assert row["data_version"] == 2
+
+    def test_asian_range_stored(self, logger_db):
+        import sqlite3
+        sid = logger_db.log_signal(_make_result_v2())
+        conn = sqlite3.connect(logger_db._db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT asian_high, asian_low FROM signals WHERE id = ?", (sid,)).fetchone()
+        conn.close()
+        assert abs(row["asian_high"] - 6510.0) < 0.1
+        assert abs(row["asian_low"] - 6490.0) < 0.1
+
+    def test_range_boundaries_stored(self, logger_db):
+        import sqlite3
+        sid = logger_db.log_signal(_make_result_v2())
+        conn = sqlite3.connect(logger_db._db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT range_high, range_low FROM signals WHERE id = ?", (sid,)).fetchone()
+        conn.close()
+        assert abs(row["range_high"] - 6530.0) < 0.1
+        assert abs(row["range_low"] - 6470.0) < 0.1
+
+
+class TestMigration:
+    def test_migration_adds_new_columns_to_old_db(self, tmp_path):
+        """Simulate an old DB without new columns and verify migration adds them."""
+        import sqlite3
+        db_path = str(tmp_path / "old_signals.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("""CREATE TABLE signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT, direction TEXT, score INTEGER,
+            outcome TEXT DEFAULT NULL, save_status TEXT DEFAULT 'complete'
+        )""")
+        conn.execute("""CREATE TABLE pattern_alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT
+        )""")
+        conn.commit()
+        conn.close()
+
+        sl = SignalLogger()
+        sl._db_path = db_path
+        sl.init_db()
+
+        conn = sqlite3.connect(db_path)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(signals)").fetchall()}
+        conn.close()
+
+        for col in ("is_ranging", "adx_value", "has_liquidity_sweep",
+                     "displacement_valid", "data_version", "fvg_age_bars",
+                     "range_size_points", "hour_utc", "sweep_bars_ago",
+                     "asian_range_size", "sl_method"):
+            assert col in columns, f"Migration did not add column: {col}"
+
+    def test_old_rows_get_data_version_1(self, tmp_path):
+        """data_version migration DEFAULT is 1 for existing rows."""
+        import sqlite3
+        db_path = str(tmp_path / "old_signals2.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("""CREATE TABLE signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT, direction TEXT, score INTEGER,
+            outcome TEXT DEFAULT NULL, save_status TEXT DEFAULT 'complete'
+        )""")
+        conn.execute("""CREATE TABLE pattern_alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT
+        )""")
+        conn.execute("INSERT INTO signals (timestamp, direction, score) VALUES ('2025-01-01', 'LONG', 4)")
+        conn.commit()
+        conn.close()
+
+        sl = SignalLogger()
+        sl._db_path = db_path
+        sl.init_db()
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT data_version FROM signals LIMIT 1").fetchone()
+        conn.close()
+        assert row["data_version"] == 1
+
+
+class TestTrainingDataExport:
+    def test_get_training_data_includes_new_columns(self, logger_db):
+        logger_db.log_signal(_make_result_v2())
+        logger_db.update_outcome(1, "WIN", 1, 10, 25.0, datetime.now(timezone.utc).isoformat())
+        df = logger_db.get_training_data()
+        assert not df.empty
+        for col in ("is_ranging", "adx_value", "has_liquidity_sweep",
+                     "displacement_valid", "data_version", "fvg_size_points"):
+            assert col in df.columns, f"Training data missing column: {col}"
+
+    def test_get_stats_by_direction(self, logger_db):
+        logger_db.log_signal(_make_result_v2("LONG"))
+        logger_db.update_outcome(1, "WIN", 1, 5, 25.0, datetime.now(timezone.utc).isoformat())
+        logger_db.log_signal(_make_result_v2("SHORT"))
+        logger_db.update_outcome(2, "LOSS", -1, 3, -15.0, datetime.now(timezone.utc).isoformat())
+        stats = logger_db.get_stats_by_direction()
+        assert "LONG" in stats
+        assert "SHORT" in stats
+        assert stats["LONG"]["wins"] == 1
+        assert stats["SHORT"]["wins"] == 0
+
+    def test_get_weekly_summary(self, logger_db):
+        logger_db.log_signal(_make_result_v2())
+        logger_db.update_outcome(1, "WIN", 1, 5, 25.0, datetime.now(timezone.utc).isoformat())
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        summary = logger_db.get_weekly_summary(cutoff)
+        assert summary["total"] >= 1
+        assert summary["wins"] >= 1

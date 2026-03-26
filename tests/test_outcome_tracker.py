@@ -76,7 +76,8 @@ class TestTripleBarrierLong:
         assert result["outcome"] == "LOSS"
         assert result["label"] == -1
 
-    def test_timeout(self, tracker):
+    def test_skip_when_too_few_bars(self, tracker):
+        """With fewer bars than OUTCOME_MIN_BARS_FOR_TIMEOUT, return None (skip)."""
         signal = _make_signal("LONG", 6500, 6485, 6525)
         bars = _make_bars([
             (6510, 6490),
@@ -84,8 +85,17 @@ class TestTripleBarrierLong:
             (6512, 6492),
         ])
         result = tracker.triple_barrier_check(signal, bars)
+        assert result is None, "Should skip (None) with only 3 bars, not mark TIMEOUT"
+
+    def test_timeout_only_after_enough_bars(self, tracker):
+        """TIMEOUT should only fire after checking sufficient bars."""
+        signal = _make_signal("LONG", 6500, 6485, 6525)
+        n = 80
+        bars = _make_bars([(6510, 6490)] * n)
+        result = tracker.triple_barrier_check(signal, bars)
+        assert result is not None
         assert result["outcome"] == "TIMEOUT"
-        assert result["label"] == 0
+        assert result["bars_to_outcome"] == n
 
 
 class TestTripleBarrierShort:
@@ -163,31 +173,44 @@ class TestStartupCatchup:
 
     def test_resolves_old_signals(self, tracker):
         now = datetime.now(timezone.utc)
+        n = 100
+        bars = pd.DataFrame({
+            "timestamp": pd.date_range(now - timedelta(hours=9), periods=n, freq="5min", tz="UTC"),
+            "open": [6500] * n, "high": [6530] * n,
+            "low": [6480] * n, "close": [6510] * n, "volume": [1000] * n,
+        })
+        tracker._ctrader.fetch_bars = MagicMock(return_value=bars)
+
         old_signal = {"id": 1, "direction": "LONG", "entry_price": 6500,
                       "sl_price": 6485, "tp_price": 6525,
                       "timestamp": (now - timedelta(hours=8)).isoformat()}
         tracker._signal_logger.get_all_null_outcome_signals.return_value = [old_signal]
         result = tracker.run_startup_catchup()
-        assert result["checked"] >= 0
+        assert result["checked"] >= 1
         tracker._signal_logger.update_outcome.assert_called()
 
     def test_h1_fallback_when_m5_empty(self, tracker, sample_h4_df):
         now = datetime.now(timezone.utc)
         old_signal = {"id": 2, "direction": "SHORT", "entry_price": 6500,
                       "sl_price": 6515, "tp_price": 6475,
-                      "timestamp": (now - timedelta(hours=10)).isoformat()}
+                      "timestamp": (now - timedelta(hours=50)).isoformat()}
         tracker._signal_logger.get_all_null_outcome_signals.return_value = [old_signal]
 
-        call_count = [0]
+        n = 200
+        h1_bars = pd.DataFrame({
+            "timestamp": pd.date_range(now - timedelta(hours=200), periods=n, freq="1h", tz="UTC"),
+            "open": [6500] * n, "high": [6520] * n,
+            "low": [6470] * n, "close": [6510] * n, "volume": [5000] * n,
+        })
+
         def side_effect(sym, period, count):
-            call_count[0] += 1
             if period == "M5":
                 return pd.DataFrame()
-            return sample_h4_df.copy()
+            return h1_bars.copy()
         tracker._ctrader.fetch_bars = MagicMock(side_effect=side_effect)
 
         result = tracker.run_startup_catchup()
-        assert call_count[0] >= 2
+        assert result["checked"] >= 1 or result["estimated"] >= 1
         tracker._signal_logger.update_outcome.assert_called()
 
 
@@ -211,6 +234,14 @@ class TestCheckpoint:
         with open(cp, "w") as f:
             json.dump({"checking_signal_id": 7, "started": "2025-01-01T00:00:00"}, f)
         now = datetime.now(timezone.utc)
+        n = 100
+        bars = pd.DataFrame({
+            "timestamp": pd.date_range(now - timedelta(hours=6), periods=n, freq="5min", tz="UTC"),
+            "open": [6500] * n, "high": [6530] * n,
+            "low": [6480] * n, "close": [6510] * n, "volume": [1000] * n,
+        })
+        tracker._ctrader.fetch_bars = MagicMock(return_value=bars)
+
         sig = {"id": 7, "direction": "LONG", "entry_price": 6500,
                "sl_price": 6485, "tp_price": 6525,
                "timestamp": (now - timedelta(hours=5)).isoformat()}

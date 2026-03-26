@@ -43,6 +43,34 @@ SL_ATR_MULTIPLIER = 1.5       # fallback SL when no FVG edge available
 SL_MIN_ATR_MULTIPLIER = 1.0   # minimum SL distance — prevents noise stops on tight FVGs
 TP_ATR_MULTIPLIER = 2.5
 MIN_RR = 1.6  # TP/SL = 2.5/1.5 = 1.67; threshold set just below to allow entries
+TP1_R_MULTIPLE = 1.0  # TP1 = 1R (equal to SL distance) for partial profit
+
+# ──────────────────────────────────────────────
+# RANGE / CONSOLIDATION DETECTION
+# ──────────────────────────────────────────────
+ADX_PERIOD = 14
+ADX_RANGE_THRESHOLD = 20        # ADX below this = market is ranging
+ATR_COMPRESSION_LOOKBACK = 20   # H1 bars to measure ATR compression
+ATR_COMPRESSION_RATIO = 0.75    # current ATR / rolling avg ATR < this = compressing
+RANGE_LOOKBACK_BARS = 20        # H1 bars to define the range boundary
+
+# ──────────────────────────────────────────────
+# DISPLACEMENT CANDLE VALIDATION
+# ──────────────────────────────────────────────
+DISPLACEMENT_BODY_RATIO = 0.5   # impulse candle body must be > 50% of its range
+DISPLACEMENT_ATR_RATIO = 0.6    # impulse candle range must be > 0.6x ATR
+
+# ──────────────────────────────────────────────
+# LIQUIDITY SWEEP DETECTION
+# ──────────────────────────────────────────────
+SWEEP_LOOKBACK_BARS = 30        # M5 bars back to check for sweeps (2.5 hrs)
+SWEEP_WICK_MIN_POINTS = 1.0     # wick must exceed level by at least this many points
+
+# ──────────────────────────────────────────────
+# ASIAN SESSION (AMD Model)
+# ──────────────────────────────────────────────
+ASIAN_SESSION_START_UTC = "00:00"
+ASIAN_SESSION_END_UTC = "09:00"
 
 # ──────────────────────────────────────────────
 # VIX BUCKETS — position sizing & trade gating
@@ -82,7 +110,9 @@ NEWS_CAUTION_MINUTES_AFTER = 30
 # SIGNAL DEDUP & OUTCOME
 # ──────────────────────────────────────────────
 SIGNAL_DEDUP_MINUTES = 5
-OUTCOME_CHECK_DELAY_SECONDS = 1800  # 30 minutes
+OUTCOME_CHECK_DELAY_SECONDS = 3600  # 1 hour — gives price time to reach TP/SL
+OUTCOME_MIN_M5_BARS_FOR_TIMEOUT = 72   # 6 hours of M5 bars — don't mark TIMEOUT until this many bars checked
+OUTCOME_MIN_H1_BARS_FOR_TIMEOUT = 8    # 8 hours of H1 bars — same real-time gate for the H1 fallback
 MAX_BARS_MEMORY = 500
 
 # ──────────────────────────────────────────────

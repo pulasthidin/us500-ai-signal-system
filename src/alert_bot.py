@@ -82,8 +82,10 @@ class AlertBot:
             price = result.get("current_price") or 0
             sl = entry.get("sl_price") or 0
             tp = entry.get("tp_price") or 0
+            tp1 = entry.get("tp1_price") or 0
             sl_pts = entry.get("sl_points") or 0
             tp_pts = entry.get("tp_points") or 0
+            tp1_pts = entry.get("tp1_points") or 0
             rr = entry.get("rr") or 0
             score = result.get("score") or 0
             layer1 = result.get("layer1") or {}
@@ -93,12 +95,16 @@ class AlertBot:
             vix_pct = layer1.get("vix_pct") or 0
             vix_bucket = result.get("vix_bucket", "")
 
+            tp_sign = '+' if direction == 'LONG' else '-'
+            sl_sign = '-' if direction == 'LONG' else '+'
+
             lines = [
-                f"{arrow} {direction} — {size_tag}",
+                f"{arrow} {direction} -- {size_tag}",
                 "\u2501" * 20,
                 f"Entry:  {price:,.2f}",
-                f"SL:     {sl:,.2f}  ({'-' if direction == 'LONG' else '+'}{sl_pts:.1f} pts)",
-                f"TP:     {tp:,.2f}  ({'+' if direction == 'LONG' else '-'}{tp_pts:.1f} pts)",
+                f"SL:     {sl:,.2f}  ({sl_sign}{sl_pts:.1f} pts)",
+                f"TP1:    {tp1:,.2f}  ({tp_sign}{tp1_pts:.1f} pts) = 1R partial",
+                f"TP2:    {tp:,.2f}  ({tp_sign}{tp_pts:.1f} pts) = full target",
                 f"R:R:    1:{rr:.2f}",
                 "\u2501" * 20,
                 f"Score:  {score}/4 \u2705",

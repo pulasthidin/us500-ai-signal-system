@@ -15,7 +15,11 @@ import numpy as np
 import pandas as pd
 
 from config import (
+    ASIAN_SESSION_END_UTC,
+    ASIAN_SESSION_START_UTC,
     ROUND_LEVEL_INTERVAL,
+    SWEEP_LOOKBACK_BARS,
+    SWEEP_WICK_MIN_POINTS,
     ZONE_DEDUP_DISTANCE,
     ZONE_THRESHOLD_POINTS,
 )
@@ -188,12 +192,151 @@ class ZoneCalculator:
             logger.error("detect_equal_highs_lows failed: %s", exc, exc_info=True)
             return []
 
+    # ─── Asian session range (AMD model) ────────────────────
+
+    def get_asian_session_range(self) -> Dict[str, Any]:
+        """
+        Compute today's Asian session high and low (00:00–09:00 UTC).
+
+        The Asian range is the accumulation phase of the AMD model.
+        London/NY sweeps of this range signal the manipulation phase,
+        which precedes the distribution (real) move.
+        """
+        try:
+            df = self._ctrader.fetch_bars(self._us500_id, "M15", 100)
+            if df is None or df.empty:
+                return {"asian_high": None, "asian_low": None, "valid": False}
+
+            df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+            today = df["timestamp"].iloc[-1].normalize()
+
+            start_h, start_m = map(int, ASIAN_SESSION_START_UTC.split(":"))
+            end_h, end_m = map(int, ASIAN_SESSION_END_UTC.split(":"))
+            session_start = today.replace(hour=start_h, minute=start_m)
+            session_end = today.replace(hour=end_h, minute=end_m)
+
+            asian_bars = df[(df["timestamp"] >= session_start) & (df["timestamp"] < session_end)]
+            if asian_bars.empty:
+                yesterday = today - pd.Timedelta(days=1)
+                session_start = yesterday.replace(hour=start_h, minute=start_m)
+                session_end = yesterday.replace(hour=end_h, minute=end_m)
+                asian_bars = df[(df["timestamp"] >= session_start) & (df["timestamp"] < session_end)]
+
+            if asian_bars.empty:
+                return {"asian_high": None, "asian_low": None, "valid": False}
+
+            asian_high = float(asian_bars["high"].max())
+            asian_low = float(asian_bars["low"].min())
+
+            logger.info("Asian range: %.2f – %.2f (%d bars)", asian_low, asian_high, len(asian_bars))
+            return {
+                "asian_high": round(asian_high, 2),
+                "asian_low": round(asian_low, 2),
+                "valid": True,
+            }
+
+        except Exception as exc:
+            logger.error("get_asian_session_range failed: %s", exc, exc_info=True)
+            return {"asian_high": None, "asian_low": None, "valid": False}
+
+    # ─── liquidity sweep detection ────────────────────────────
+
+    def detect_liquidity_sweeps(
+        self, key_levels: List[Dict[str, Any]], m5_df: Optional[pd.DataFrame] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Detect liquidity sweeps of key levels in recent M5 bars.
+
+        A sweep occurs when price wicks past a key level but closes back
+        inside — smart money grabbed the resting liquidity (stop-loss orders)
+        beyond that level.
+
+        Buy-side sweep (above resistance): high > level, close < level
+          → collected stop-losses from short sellers
+          → bearish reversal signal
+
+        Sell-side sweep (below support): low < level, close > level
+          → collected stop-losses from long holders
+          → bullish reversal signal
+
+        Returns a list of swept levels with sweep details.
+        """
+        try:
+            if m5_df is None:
+                m5_df = self._ctrader.fetch_bars(self._us500_id, "M5", SWEEP_LOOKBACK_BARS + 5)
+            if m5_df is None or m5_df.empty or not key_levels:
+                return []
+
+            recent = m5_df.tail(SWEEP_LOOKBACK_BARS)
+            if recent.empty:
+                return []
+
+            sweeps: List[Dict[str, Any]] = []
+            highs = recent["high"].values
+            lows = recent["low"].values
+            closes = recent["close"].values
+
+            for lvl in key_levels:
+                price = lvl.get("price")
+                lvl_type = lvl.get("type", "unknown")
+                if price is None:
+                    continue
+
+                buy_side_types = {"pdh", "eqh", "asian_high"}
+                sell_side_types = {"pdl", "eql", "asian_low"}
+
+                check_buy = lvl_type in buy_side_types or (lvl_type not in sell_side_types and price > closes[-1])
+                check_sell = lvl_type in sell_side_types or (lvl_type not in buy_side_types and price < closes[-1])
+
+                if check_buy:
+                    for i in range(len(recent) - 1, -1, -1):
+                        if highs[i] > price + SWEEP_WICK_MIN_POINTS and closes[i] < price:
+                            bars_ago = len(recent) - 1 - i
+                            sweeps.append({
+                                "level_price": round(price, 2),
+                                "level_type": lvl_type,
+                                "sweep_side": "buy_side",
+                                "sweep_high": round(float(highs[i]), 2),
+                                "bars_ago": bars_ago,
+                                "favors_direction": "SHORT",
+                            })
+                            break
+
+                if check_sell:
+                    for i in range(len(recent) - 1, -1, -1):
+                        if lows[i] < price - SWEEP_WICK_MIN_POINTS and closes[i] > price:
+                            bars_ago = len(recent) - 1 - i
+                            sweeps.append({
+                                "level_price": round(price, 2),
+                                "level_type": lvl_type,
+                                "sweep_side": "sell_side",
+                                "sweep_low": round(float(lows[i]), 2),
+                                "bars_ago": bars_ago,
+                                "favors_direction": "LONG",
+                            })
+                            break
+
+            if sweeps:
+                logger.info(
+                    "Liquidity sweeps detected: %s",
+                    [(s["level_type"], s["sweep_side"], s["bars_ago"]) for s in sweeps],
+                )
+
+            return sweeps
+
+        except Exception as exc:
+            logger.error("detect_liquidity_sweeps failed: %s", exc, exc_info=True)
+            return []
+
     # ─── aggregate levels ────────────────────────────────────
 
-    def get_all_levels(self, current_price: float) -> List[Dict[str, Any]]:
+    def get_all_levels(
+        self, current_price: float, include_asian: bool = True,
+        _cached_asian: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
         """
-        Combine round levels, PDH, PDL, and POC into a single list.
-        Deduplicates levels within ZONE_DEDUP_DISTANCE points.
+        Combine round levels, PDH, PDL, POC, EQH/EQL, and Asian session range
+        into a single deduplicated list.
         """
         try:
             levels: List[Dict[str, Any]] = []
@@ -214,9 +357,20 @@ class ZoneCalculator:
             for eqhl in self.detect_equal_highs_lows():
                 levels.append(eqhl)
 
+            if include_asian:
+                asian = _cached_asian if _cached_asian is not None else self.get_asian_session_range()
+                if asian.get("valid"):
+                    if asian["asian_high"] is not None:
+                        levels.append({"price": asian["asian_high"], "type": "asian_high"})
+                    if asian["asian_low"] is not None:
+                        levels.append({"price": asian["asian_low"], "type": "asian_low"})
+
             levels.sort(key=lambda x: x["price"])
 
-            _LEVEL_PRIORITY = {"pdh": 5, "pdl": 5, "eqh": 4, "eql": 4, "poc": 3, "round": 1}
+            _LEVEL_PRIORITY = {
+                "pdh": 5, "pdl": 5, "eqh": 4, "eql": 4,
+                "asian_high": 4, "asian_low": 4, "poc": 3, "round": 1,
+            }
 
             deduped: List[Dict[str, Any]] = []
             for lvl in levels:
@@ -295,10 +449,16 @@ class ZoneCalculator:
     # ─── Layer 3 composite ───────────────────────────────────
 
     def get_layer3_result(self, current_price: float) -> Dict[str, Any]:
-        """Run full zone analysis. Score = 1 if price is at a key zone."""
+        """Run full zone analysis including Asian range and liquidity sweeps."""
         try:
-            all_levels = self.get_all_levels(current_price)
+            asian_range = self.get_asian_session_range()
+            all_levels = self.get_all_levels(current_price, include_asian=True, _cached_asian=asian_range)
             zone_info = self.find_nearest_zone(current_price, all_levels)
+
+            liquidity_sweeps = self.detect_liquidity_sweeps(all_levels)
+
+            has_buy_side_sweep = any(s["sweep_side"] == "buy_side" for s in liquidity_sweeps)
+            has_sell_side_sweep = any(s["sweep_side"] == "sell_side" for s in liquidity_sweeps)
 
             return {
                 "at_zone": zone_info["at_zone"],
@@ -309,6 +469,10 @@ class ZoneCalculator:
                 "score_contribution": 1 if zone_info["at_zone"] else 0,
                 "all_levels": all_levels,
                 "all_nearby": zone_info["all_nearby"],
+                "asian_range": asian_range,
+                "liquidity_sweeps": liquidity_sweeps,
+                "has_buy_side_sweep": has_buy_side_sweep,
+                "has_sell_side_sweep": has_sell_side_sweep,
             }
 
         except Exception as exc:
@@ -318,6 +482,9 @@ class ZoneCalculator:
                 "at_zone": False, "zone_level": None, "zone_type": None,
                 "distance": 999.0, "zone_direction": None, "score_contribution": 0,
                 "all_levels": [], "all_nearby": [],
+                "asian_range": {"asian_high": None, "asian_low": None, "valid": False},
+                "liquidity_sweeps": [],
+                "has_buy_side_sweep": False, "has_sell_side_sweep": False,
             }
 
     # ─── helpers ─────────────────────────────────────────────

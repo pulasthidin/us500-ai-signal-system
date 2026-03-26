@@ -24,10 +24,13 @@ from smartmoneyconcepts import smc
 
 from config import (
     ATR_PERIOD,
+    DISPLACEMENT_ATR_RATIO,
+    DISPLACEMENT_BODY_RATIO,
     MIN_RR,
     SL_ATR_MULTIPLIER,
     SL_MIN_ATR_MULTIPLIER,
     TP_ATR_MULTIPLIER,
+    TP1_R_MULTIPLE,
 )
 
 os.makedirs("logs", exist_ok=True)
@@ -175,7 +178,24 @@ class EntryChecker:
                 if min_fvg_size > 0 and abs(top - bottom) < min_fvg_size:
                     continue
 
-                return self._fvg_result(df, idx, top, bottom, target_dir)
+                disp_valid = True
+                try:
+                    iloc_pos = df.index.get_loc(idx) if idx in df.index else int(idx)
+                    if not isinstance(iloc_pos, int):
+                        iloc_pos = int(idx)
+                    bar = df.iloc[iloc_pos]
+                    disp_valid = self._is_displacement_candle(
+                        float(bar["open"]), float(bar["close"]),
+                        float(bar["high"]), float(bar["low"]), atr,
+                    )
+                except Exception:
+                    pass
+
+                if not disp_valid:
+                    logger.debug("SMC FVG at idx=%s rejected — impulse candle not displacement", idx)
+                    continue
+
+                return self._fvg_result(df, idx, top, bottom, target_dir, displacement_valid=True)
 
             return self._empty_fvg()
         except Exception as exc:
@@ -241,19 +261,56 @@ class EntryChecker:
                 if mitigated:
                     continue
 
-                return self._fvg_result(df, i, gap_top, gap_bottom, target_dir)
+                disp_valid = self._is_displacement_candle(
+                    opens[i], closes[i], highs[i], lows[i], atr,
+                )
+                if not disp_valid:
+                    logger.debug("Body FVG at bar %d rejected — impulse candle not displacement", i)
+                    continue
+
+                return self._fvg_result(df, i, gap_top, gap_bottom, target_dir, displacement_valid=True)
 
             return self._empty_fvg()
         except Exception as exc:
             logger.debug("Body FVG detection failed: %s", exc)
             return self._empty_fvg()
 
-    def _fvg_result(self, df: pd.DataFrame, idx: int, top: float, bottom: float, direction: str) -> Dict[str, Any]:
+    # ─── displacement candle validation ─────────────────────
+
+    @staticmethod
+    def _is_displacement_candle(
+        open_price: float, close_price: float, high: float, low: float, atr: float
+    ) -> bool:
+        """
+        Validate that a candle qualifies as a displacement (institutional impulse).
+
+        A displacement candle has:
+          1. Body > DISPLACEMENT_BODY_RATIO of the total candle range
+             (strong directional commitment, not a doji or indecision candle)
+          2. Candle range > DISPLACEMENT_ATR_RATIO * ATR
+             (the move is significant relative to recent volatility)
+
+        Thresholds are in config.py. This filters out noise FVGs from weak candles.
+        """
+        candle_range = high - low
+        if candle_range <= 0:
+            return False
+        body_size = abs(close_price - open_price)
+        body_ratio = body_size / candle_range
+        if body_ratio < DISPLACEMENT_BODY_RATIO:
+            return False
+        if atr > 0 and candle_range < DISPLACEMENT_ATR_RATIO * atr:
+            return False
+        return True
+
+    def _fvg_result(
+        self, df: pd.DataFrame, idx: int, top: float, bottom: float,
+        direction: str, displacement_valid: bool = True,
+    ) -> Dict[str, Any]:
         """Build an FVG result dict."""
         midpoint = (top + bottom) / 2
         try:
             pos = df.index.get_loc(idx)
-            # get_loc can return a slice or array for duplicate indices — fall back to int
             if not isinstance(pos, int):
                 pos = int(idx)
         except (KeyError, TypeError):
@@ -266,6 +323,7 @@ class EntryChecker:
             "midpoint": round(midpoint, 2),
             "age_bars": int(bars_ago),
             "direction": direction,
+            "displacement_valid": displacement_valid,
         }
 
     # ─── M5 BOS ──────────────────────────────────────────────
@@ -566,42 +624,128 @@ class EntryChecker:
             tp_distance = abs(current_price - tp_price)
             rr = (tp_distance / sl_distance) if sl_distance > 0 else 0.0
 
+            tp1_distance = sl_distance * TP1_R_MULTIPLE
+            if direction.upper() == "SHORT":
+                tp1_price = current_price - tp1_distance
+            else:
+                tp1_price = current_price + tp1_distance
+
             return {
                 "sl_price": round(sl_price, 2),
                 "tp_price": round(tp_price, 2),
+                "tp1_price": round(tp1_price, 2),
                 "rr": round(rr, 2),
                 "sl_points": round(sl_distance, 2),
                 "tp_points": round(tp_distance, 2),
+                "tp1_points": round(tp1_distance, 2),
                 "atr_value": round(atr, 2),
                 "tp_source": tp_source,
             }
 
         except Exception as exc:
             logger.error("calculate_rr failed: %s", exc, exc_info=True)
-            return {"sl_price": 0, "tp_price": 0, "rr": 0, "sl_points": 0, "tp_points": 0, "atr_value": 0, "tp_source": "error"}
+            return {"sl_price": 0, "tp_price": 0, "tp1_price": 0, "rr": 0, "sl_points": 0, "tp_points": 0, "tp1_points": 0, "atr_value": 0, "tp_source": "error"}
+
+    # ─── range-aware SL ─────────────────────────────────────
+
+    def _detect_range_sl(
+        self, direction: str, range_condition: Dict[str, Any], atr: float
+    ) -> Optional[float]:
+        """
+        When the market is ranging, place SL beyond the H1 range boundary
+        instead of the micro-swing.  This prevents the SL from sitting
+        inside the range where price will naturally oscillate.
+
+        SHORT SL → above range_high + buffer
+        LONG SL  → below range_low  - buffer
+        """
+        try:
+            if not range_condition.get("is_ranging"):
+                return None
+            range_high = range_condition.get("range_high")
+            range_low = range_condition.get("range_low")
+            if range_high is None or range_low is None:
+                return None
+
+            buffer = 0.15 * atr
+            if direction.upper() == "SHORT":
+                sl = round(range_high + buffer, 2)
+                logger.info("Range SL (SHORT): %.2f (range_high=%.2f + buffer=%.2f)", sl, range_high, buffer)
+                return sl
+            else:
+                sl = round(range_low - buffer, 2)
+                logger.info("Range SL (LONG): %.2f (range_low=%.2f - buffer=%.2f)", sl, range_low, buffer)
+                return sl
+        except Exception as exc:
+            logger.error("_detect_range_sl failed: %s", exc, exc_info=True)
+            return None
+
+    # ─── liquidity sweep filter ───────────────────────────────
+
+    @staticmethod
+    def _check_sweep_for_direction(
+        liquidity_sweeps: list, direction: str
+    ) -> Dict[str, Any]:
+        """
+        Check if there's a directionally-relevant liquidity sweep.
+
+        SHORT entries require a buy-side sweep (price swept above resistance,
+        collected short stop-losses, then rejected).
+
+        LONG entries require a sell-side sweep (price swept below support,
+        collected long stop-losses, then rejected).
+        """
+        if not liquidity_sweeps:
+            return {"has_sweep": False, "sweep_details": None}
+
+        target_side = "buy_side" if direction.upper() == "SHORT" else "sell_side"
+        matching = [s for s in liquidity_sweeps if s.get("sweep_side") == target_side]
+
+        if not matching:
+            return {"has_sweep": False, "sweep_details": None}
+
+        best = min(matching, key=lambda s: s.get("bars_ago", 999))
+        return {"has_sweep": True, "sweep_details": best}
 
     # ─── composite entry check ───────────────────────────────
 
-    def get_entry_result(self, direction: str, current_price: float, zone_levels: Optional[list] = None) -> Dict[str, Any]:
+    def get_entry_result(
+        self,
+        direction: str,
+        current_price: float,
+        zone_levels: Optional[list] = None,
+        range_condition: Optional[Dict[str, Any]] = None,
+        liquidity_sweeps: Optional[list] = None,
+    ) -> Dict[str, Any]:
         """
-        Run M5 entry conditions.
+        Run M5 entry conditions with displacement validation, liquidity sweep
+        awareness, and range-adaptive SL placement.
 
         Hard gate (required):
-          1. M5 FVG in trade direction (unfilled / unmitigated)
+          1. M5 FVG in trade direction with valid displacement candle
           2. R:R ≥ MIN_RR
 
+        Soft gate (affects confidence, entry_ready when ranging):
+          3. Liquidity sweep in the correct direction
+
         Bonus (confidence — affects grade, not entry readiness):
-          3. M5 BOS confirmed in trade direction
-          4. USTEC SMT agreement
+          4. M5 BOS confirmed in trade direction
+          5. USTEC SMT agreement
 
         entry_confidence:
-          "full"     — FVG + RR + BOS + SMT  (all 4)
-          "high"     — FVG + RR + one of BOS/SMT
-          "base"     — FVG + RR only (minimum entry)
+          "full"     — FVG + RR + sweep + BOS + SMT
+          "high"     — FVG + RR + sweep + one of BOS/SMT
+          "base"     — FVG + RR + sweep
+          "no_sweep" — FVG + RR but no sweep (valid in trending, downgraded in ranging)
         """
         try:
             if not direction or direction.upper() not in ("LONG", "SHORT"):
                 return self._empty_entry()
+
+            if range_condition is None:
+                range_condition = {}
+            if liquidity_sweeps is None:
+                liquidity_sweeps = []
 
             us500_df = self.get_m5_bars(50)
             ustec_df = self.get_m5_ustec_bars(50)
@@ -615,12 +759,40 @@ class EntryChecker:
             fvg = self.detect_m5_fvg(us500_df, direction, atr=atr)
             m5_bos = self.detect_m5_bos(us500_df, direction)
             smt = self.check_ustec_smt(us500_df, ustec_df, direction)
+            sweep_check = self._check_sweep_for_direction(liquidity_sweeps, direction)
 
             fvg_edge = None
             if fvg.get("present"):
                 fvg_edge = fvg.get("bottom") if direction.upper() == "LONG" else fvg.get("top")
 
-            swing_sl = self._detect_swing_sl(us500_df, direction, atr)
+            is_ranging = range_condition.get("is_ranging", False)
+            normal_swing_sl = self._detect_swing_sl(us500_df, direction, atr)
+
+            if is_ranging:
+                range_sl = self._detect_range_sl(direction, range_condition, atr)
+                if range_sl is not None and normal_swing_sl is not None:
+                    range_sl_dist = abs(current_price - range_sl)
+                    swing_sl_dist = abs(current_price - normal_swing_sl)
+                    if range_sl_dist > 3.0 * atr:
+                        swing_sl = normal_swing_sl
+                        sl_method = "swing"
+                        logger.info(
+                            "Range SL too wide (%.1f pts > 3xATR=%.1f), using swing SL instead",
+                            range_sl_dist, 3.0 * atr,
+                        )
+                    else:
+                        swing_sl = range_sl
+                        sl_method = "range"
+                elif range_sl is not None:
+                    swing_sl = range_sl
+                    sl_method = "range"
+                else:
+                    swing_sl = normal_swing_sl
+                    sl_method = "swing"
+            else:
+                swing_sl = normal_swing_sl
+                sl_method = "swing"
+
             rr_info = self.calculate_rr(
                 current_price, direction, atr,
                 fvg_edge=fvg_edge,
@@ -629,44 +801,61 @@ class EntryChecker:
             )
             rr_valid = rr_info["rr"] >= MIN_RR
 
-            # ── Hard gate: FVG + R:R ──
             entry_ready = fvg["present"] and rr_valid
+            has_sweep = sweep_check["has_sweep"]
 
-            # ── Confidence tier based on bonus conditions ──
+            if is_ranging and entry_ready and not has_sweep:
+                entry_ready = False
+                logger.info(
+                    "Entry blocked: ranging market + no directional sweep -- "
+                    "FVG alone insufficient (ADX=%.1f, range_strength=%s)",
+                    range_condition.get("adx_value", 0),
+                    range_condition.get("range_strength", "?"),
+                )
+
             bonus_count = sum([m5_bos, smt["agrees"]])
-            if entry_ready and bonus_count == 2:
-                entry_confidence = "full"      # all conditions met
-            elif entry_ready and bonus_count == 1:
-                entry_confidence = "high"      # FVG + RR + one bonus
-            elif entry_ready:
-                entry_confidence = "base"      # FVG + RR only
+            if entry_ready and has_sweep and bonus_count == 2:
+                entry_confidence = "full"
+            elif entry_ready and has_sweep and bonus_count == 1:
+                entry_confidence = "high"
+            elif entry_ready and has_sweep:
+                entry_confidence = "base"
+            elif entry_ready and not has_sweep:
+                entry_confidence = "no_sweep"
             else:
                 entry_confidence = None
 
             logger.info(
-                "Entry check: FVG=%s BOS=%s SMT=%s RR=%.2f(valid=%s) → %s (confidence=%s)",
-                fvg["present"], m5_bos, smt["agrees"],
-                rr_info["rr"], rr_valid,
+                "Entry check: FVG=%s disp=%s sweep=%s BOS=%s SMT=%s RR=%.2f(valid=%s) ranging=%s -> %s (confidence=%s sl=%s)",
+                fvg["present"], fvg.get("displacement_valid", "n/a"),
+                has_sweep, m5_bos, smt["agrees"],
+                rr_info["rr"], rr_valid, is_ranging,
                 "READY" if entry_ready else "NOT_READY",
-                entry_confidence,
+                entry_confidence, sl_method,
             )
 
             return {
                 "fvg_present": fvg["present"],
                 "fvg_details": fvg,
+                "displacement_valid": fvg.get("displacement_valid", False) if fvg["present"] else False,
                 "m5_bos_confirmed": m5_bos,
                 "ustec_agrees": smt["agrees"],
                 "ustec_details": smt,
                 "rr_valid": rr_valid,
                 "entry_ready": entry_ready,
                 "entry_confidence": entry_confidence,
+                "has_liquidity_sweep": has_sweep,
+                "sweep_details": sweep_check.get("sweep_details"),
                 "sl_price": rr_info["sl_price"],
                 "tp_price": rr_info["tp_price"],
+                "tp1_price": rr_info["tp1_price"],
                 "rr": rr_info["rr"],
                 "sl_points": rr_info["sl_points"],
                 "tp_points": rr_info["tp_points"],
+                "tp1_points": rr_info["tp1_points"],
                 "atr": rr_info["atr_value"],
                 "tp_source": rr_info["tp_source"],
+                "sl_method": sl_method,
             }
 
         except Exception as exc:
@@ -677,16 +866,22 @@ class EntryChecker:
     # ─── fallbacks ───────────────────────────────────────────
 
     def _empty_fvg(self) -> Dict[str, Any]:
-        return {"present": False, "top": None, "bottom": None, "midpoint": None, "age_bars": 0, "direction": None}
+        return {
+            "present": False, "top": None, "bottom": None, "midpoint": None,
+            "age_bars": 0, "direction": None, "displacement_valid": False,
+        }
 
     def _empty_entry(self) -> Dict[str, Any]:
         return {
             "fvg_present": False, "fvg_details": self._empty_fvg(),
+            "displacement_valid": False,
             "m5_bos_confirmed": False, "ustec_agrees": False,
             "ustec_details": {"agrees": False, "us500_swing": "unknown", "ustec_swing": "unknown", "divergence_type": None},
             "rr_valid": False, "entry_ready": False, "entry_confidence": None,
-            "sl_price": 0, "tp_price": 0, "rr": 0, "sl_points": 0, "tp_points": 0, "atr": 0,
-            "tp_source": None,
+            "has_liquidity_sweep": False, "sweep_details": None,
+            "sl_price": 0, "tp_price": 0, "tp1_price": 0,
+            "rr": 0, "sl_points": 0, "tp_points": 0, "tp1_points": 0, "atr": 0,
+            "tp_source": None, "sl_method": None,
         }
 
     def _send_system_alert(self, level: str, component: str, message: str) -> None:

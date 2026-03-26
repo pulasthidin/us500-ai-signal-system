@@ -50,8 +50,13 @@ class TestConfig:
         assert config.SL_MIN_ATR_MULTIPLIER > 0
         assert config.SL_MIN_ATR_MULTIPLIER <= config.SL_ATR_MULTIPLIER
 
-    def test_outcome_check_delay_is_30m(self):
-        assert config.OUTCOME_CHECK_DELAY_SECONDS == 1800
+    def test_outcome_check_delay_is_1h(self):
+        assert config.OUTCOME_CHECK_DELAY_SECONDS == 3600
+
+    def test_outcome_min_bars_m5_and_h1(self):
+        assert config.OUTCOME_MIN_M5_BARS_FOR_TIMEOUT >= 48
+        assert config.OUTCOME_MIN_H1_BARS_FOR_TIMEOUT >= 6
+        assert config.OUTCOME_MIN_M5_BARS_FOR_TIMEOUT > config.OUTCOME_MIN_H1_BARS_FOR_TIMEOUT
 
     def test_vix_buckets_are_contiguous_and_non_overlapping(self):
         """Every VIX value must fall in exactly one bucket — no gaps, no overlaps."""
@@ -72,3 +77,48 @@ class TestConfig:
     def test_eqh_eql_nearby_points_exists(self):
         assert hasattr(config, "EQH_EQL_NEARBY_POINTS")
         assert config.EQH_EQL_NEARBY_POINTS > 0
+
+    # ─── Range / consolidation detection constants ─────────
+
+    def test_adx_constants_present_and_valid(self):
+        assert hasattr(config, "ADX_PERIOD")
+        assert config.ADX_PERIOD > 0
+        assert hasattr(config, "ADX_RANGE_THRESHOLD")
+        assert 10 <= config.ADX_RANGE_THRESHOLD <= 30
+
+    def test_atr_compression_constants(self):
+        assert hasattr(config, "ATR_COMPRESSION_LOOKBACK")
+        assert config.ATR_COMPRESSION_LOOKBACK >= 10
+        assert hasattr(config, "ATR_COMPRESSION_RATIO")
+        assert 0 < config.ATR_COMPRESSION_RATIO < 1.0
+
+    def test_range_lookback_bars(self):
+        assert hasattr(config, "RANGE_LOOKBACK_BARS")
+        assert config.RANGE_LOOKBACK_BARS >= 10
+
+    # ─── Displacement candle constants ─────────────────────
+
+    def test_displacement_body_ratio(self):
+        assert hasattr(config, "DISPLACEMENT_BODY_RATIO")
+        assert 0.3 <= config.DISPLACEMENT_BODY_RATIO <= 0.8
+
+    def test_displacement_atr_ratio(self):
+        assert hasattr(config, "DISPLACEMENT_ATR_RATIO")
+        assert 0.3 <= config.DISPLACEMENT_ATR_RATIO <= 1.5
+
+    # ─── Liquidity sweep constants ─────────────────────────
+
+    def test_sweep_constants_present(self):
+        assert hasattr(config, "SWEEP_LOOKBACK_BARS")
+        assert config.SWEEP_LOOKBACK_BARS >= 10
+        assert hasattr(config, "SWEEP_WICK_MIN_POINTS")
+        assert config.SWEEP_WICK_MIN_POINTS >= 0
+
+    # ─── Asian session constants ───────────────────────────
+
+    def test_asian_session_times(self):
+        assert hasattr(config, "ASIAN_SESSION_START_UTC")
+        assert hasattr(config, "ASIAN_SESSION_END_UTC")
+        start_h = int(config.ASIAN_SESSION_START_UTC.split(":")[0])
+        end_h = int(config.ASIAN_SESSION_END_UTC.split(":")[0])
+        assert end_h > start_h

@@ -97,9 +97,37 @@ CREATE TABLE IF NOT EXISTS signals (
     entry_price REAL,
     sl_price REAL,
     tp_price REAL,
+    tp1_price REAL,
     sl_points REAL,
     tp_points REAL,
+    tp1_points REAL,
     tp_source TEXT,
+
+    is_ranging INTEGER,
+    range_strength TEXT,
+    adx_value REAL,
+    atr_compressing INTEGER,
+    range_high REAL,
+    range_low REAL,
+    has_liquidity_sweep INTEGER,
+    sweep_level_type TEXT,
+    sweep_side TEXT,
+    sweep_bars_ago INTEGER,
+    displacement_valid INTEGER,
+    asian_high REAL,
+    asian_low REAL,
+    sl_method TEXT,
+
+    tp1_hit INTEGER DEFAULT 0,
+    tp1_hit_timestamp TEXT,
+
+    fvg_age_bars INTEGER,
+    fvg_size_points REAL,
+    range_size_points REAL,
+    price_in_range_pct REAL,
+    asian_range_size REAL,
+    hour_utc INTEGER,
+    data_version INTEGER DEFAULT 2,
 
     outcome TEXT DEFAULT NULL,
     outcome_label INTEGER DEFAULT NULL,
@@ -155,6 +183,31 @@ class SignalLogger:
             ("entry_confidence", "TEXT"),
             ("direction_confidence", "TEXT"),
             ("tp_source", "TEXT"),
+            ("is_ranging", "INTEGER"),
+            ("range_strength", "TEXT"),
+            ("adx_value", "REAL"),
+            ("atr_compressing", "INTEGER"),
+            ("range_high", "REAL"),
+            ("range_low", "REAL"),
+            ("has_liquidity_sweep", "INTEGER"),
+            ("sweep_level_type", "TEXT"),
+            ("sweep_side", "TEXT"),
+            ("displacement_valid", "INTEGER"),
+            ("asian_high", "REAL"),
+            ("asian_low", "REAL"),
+            ("sl_method", "TEXT"),
+            ("sweep_bars_ago", "INTEGER"),
+            ("fvg_age_bars", "INTEGER"),
+            ("fvg_size_points", "REAL"),
+            ("range_size_points", "REAL"),
+            ("price_in_range_pct", "REAL"),
+            ("asian_range_size", "REAL"),
+            ("hour_utc", "INTEGER"),
+            ("data_version", "INTEGER DEFAULT 1"),
+            ("tp1_price", "REAL"),
+            ("tp1_points", "REAL"),
+            ("tp1_hit", "INTEGER"),
+            ("tp1_hit_timestamp", "TEXT"),
         ]
         for col_name, col_type in migrations:
             if col_name not in existing:
@@ -209,6 +262,36 @@ class SignalLogger:
             entry = result.get("entry") or {}
             caution = json.dumps(result.get("caution_flags", []))
 
+            range_cond = result.get("range_condition") or layer2.get("range_condition") or {}
+            asian_range = layer3.get("asian_range", {})
+            sweep_details = entry.get("sweep_details") or {}
+
+            fvg_details = entry.get("fvg_details") or {}
+            fvg_top = fvg_details.get("top")
+            fvg_bottom = fvg_details.get("bottom")
+            fvg_age_bars = fvg_details.get("age_bars")
+            fvg_size_points = round(abs(fvg_top - fvg_bottom), 2) if fvg_top is not None and fvg_bottom is not None else None
+
+            r_high = range_cond.get("range_high")
+            r_low = range_cond.get("range_low")
+            range_size = round(r_high - r_low, 2) if r_high is not None and r_low is not None else None
+            cp = result.get("current_price", 0)
+            if r_high is not None and r_low is not None and r_high > r_low and cp > 0:
+                price_in_range_pct = round((cp - r_low) / (r_high - r_low) * 100, 1)
+            else:
+                price_in_range_pct = None
+
+            a_high = asian_range.get("asian_high")
+            a_low = asian_range.get("asian_low")
+            asian_range_size = round(a_high - a_low, 2) if a_high is not None and a_low is not None else None
+
+            sweep_bars_ago = sweep_details.get("bars_ago") if sweep_details else None
+
+            try:
+                hour_utc = datetime.fromisoformat(result.get("timestamp", "")).hour
+            except Exception:
+                hour_utc = datetime.now(timezone.utc).hour
+
             conn = self._connect()
             try:
                 with conn:
@@ -224,7 +307,12 @@ class SignalLogger:
                             delta_direction, divergence, vix_spiking_now, confirms_bias,
                             fvg_present, fvg_top, fvg_bottom, m5_bos, ustec_agrees, rr, atr,
                             score, entry_ready, entry_confidence, direction_confidence, direction, decision, grade, size_label, caution_flags,
-                            entry_price, sl_price, tp_price, sl_points, tp_points, tp_source,
+                            entry_price, sl_price, tp_price, tp1_price, sl_points, tp_points, tp1_points, tp_source,
+                            is_ranging, range_strength, adx_value, atr_compressing, range_high, range_low,
+                            has_liquidity_sweep, sweep_level_type, sweep_side, sweep_bars_ago,
+                            displacement_valid, asian_high, asian_low, sl_method,
+                            fvg_age_bars, fvg_size_points, range_size_points, price_in_range_pct,
+                            asian_range_size, hour_utc, data_version,
                             save_status
                         ) VALUES (
                             ?, ?, ?, ?, ?, ?, ?,
@@ -236,7 +324,11 @@ class SignalLogger:
                             ?, ?, ?, ?,
                             ?, ?, ?, ?, ?, ?, ?,
                             ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                            ?, ?, ?, ?, ?, ?, ?, ?,
                             ?, ?, ?, ?, ?, ?,
+                            ?, ?, ?, ?,
+                            ?, ?, ?, ?,
+                            ?, ?, ?, ?, ?, ?, ?,
                             ?
                         )
                         """,
@@ -307,9 +399,36 @@ class SignalLogger:
                             result.get("current_price"),
                             entry.get("sl_price"),
                             entry.get("tp_price"),
+                            entry.get("tp1_price"),
                             entry.get("sl_points"),
                             entry.get("tp_points"),
+                            entry.get("tp1_points"),
                             entry.get("tp_source"),
+
+                            self._bool_to_int(range_cond.get("is_ranging")),
+                            range_cond.get("range_strength"),
+                            range_cond.get("adx_value"),
+                            self._bool_to_int(range_cond.get("atr_compressing")),
+                            range_cond.get("range_high"),
+                            range_cond.get("range_low"),
+
+                            self._bool_to_int(entry.get("has_liquidity_sweep")),
+                            sweep_details.get("level_type"),
+                            sweep_details.get("sweep_side"),
+                            sweep_bars_ago,
+
+                            self._bool_to_int(entry.get("displacement_valid")),
+                            asian_range.get("asian_high"),
+                            asian_range.get("asian_low"),
+                            entry.get("sl_method"),
+
+                            fvg_age_bars,
+                            fvg_size_points,
+                            range_size,
+                            price_in_range_pct,
+                            asian_range_size,
+                            hour_utc,
+                            2,
 
                             "complete",
                         ),
@@ -344,14 +463,36 @@ class SignalLogger:
         except Exception as exc:
             logger.error("update_outcome failed: %s", exc, exc_info=True)
 
+    def update_tp1_hit(self, signal_id: int, timestamp: str) -> None:
+        """Record that TP1 was hit — sets outcome to PARTIAL_WIN."""
+        try:
+            self._execute(
+                """
+                UPDATE signals
+                SET outcome = 'PARTIAL_WIN', outcome_label = 0,
+                    tp1_hit = 1, tp1_hit_timestamp = ?
+                WHERE id = ?
+                """,
+                (timestamp, signal_id),
+            )
+            logger.info("TP1 hit for signal %d — PARTIAL_WIN", signal_id)
+        except Exception as exc:
+            logger.error("update_tp1_hit failed: %s", exc, exc_info=True)
+
     # ─── reads ───────────────────────────────────────────────
 
     def get_pending_signals(self) -> List[Dict[str, Any]]:
-        """Return signals that have no outcome and are older than the check delay."""
+        """Return signals needing outcome resolution:
+        - outcome IS NULL: never checked yet (wait for check delay)
+        - outcome = 'PARTIAL_WIN': TP1 hit, need to check for TP2 upgrade
+        """
         try:
             cutoff = (datetime.now(timezone.utc) - timedelta(seconds=OUTCOME_CHECK_DELAY_SECONDS)).isoformat()
             rows = self._query(
-                "SELECT * FROM signals WHERE outcome IS NULL AND timestamp < ? ORDER BY timestamp ASC",
+                """SELECT * FROM signals
+                   WHERE (outcome IS NULL AND timestamp < ?)
+                      OR (outcome = 'PARTIAL_WIN' AND tp1_hit = 1)
+                   ORDER BY timestamp ASC""",
                 (cutoff,),
             )
             return [dict(r) for r in rows]
@@ -405,12 +546,12 @@ class SignalLogger:
 
     def get_win_rate(self) -> float:
         """Win % among labelled signals.
-        Counts both 'WIN' and 'ESTIMATED_WIN' (H1-fallback resolved) as wins.
+        Counts WIN, ESTIMATED_WIN, and PARTIAL_WIN variants as wins.
         """
         try:
             row = self._query(
                 """SELECT COUNT(*) as total,
-                          SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN') THEN 1 ELSE 0 END) as wins
+                          SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN','PARTIAL_WIN','PARTIAL_WIN_FINAL','ESTIMATED_PARTIAL_WIN','ESTIMATED_PARTIAL_WIN_FINAL') THEN 1 ELSE 0 END) as wins
                    FROM signals WHERE outcome IS NOT NULL""",
                 fetchall=False,
             )
@@ -426,7 +567,7 @@ class SignalLogger:
         try:
             rows = self._query("""
                 SELECT session, COUNT(*) as total,
-                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN') THEN 1 ELSE 0 END) as wins
+                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN','PARTIAL_WIN','PARTIAL_WIN_FINAL','ESTIMATED_PARTIAL_WIN','ESTIMATED_PARTIAL_WIN_FINAL') THEN 1 ELSE 0 END) as wins
                 FROM signals WHERE outcome IS NOT NULL GROUP BY session
             """)
             return {
@@ -445,7 +586,7 @@ class SignalLogger:
         try:
             rows = self._query("""
                 SELECT grade, COUNT(*) as total,
-                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN') THEN 1 ELSE 0 END) as wins
+                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN','PARTIAL_WIN','PARTIAL_WIN_FINAL','ESTIMATED_PARTIAL_WIN','ESTIMATED_PARTIAL_WIN_FINAL') THEN 1 ELSE 0 END) as wins
                 FROM signals WHERE outcome IS NOT NULL AND grade IS NOT NULL GROUP BY grade
             """)
             return {
@@ -464,7 +605,7 @@ class SignalLogger:
         try:
             rows = self._query("""
                 SELECT direction, COUNT(*) as total,
-                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN') THEN 1 ELSE 0 END) as wins,
+                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN','PARTIAL_WIN','PARTIAL_WIN_FINAL','ESTIMATED_PARTIAL_WIN','ESTIMATED_PARTIAL_WIN_FINAL') THEN 1 ELSE 0 END) as wins,
                        SUM(COALESCE(pnl_points, 0)) as total_pnl
                 FROM signals WHERE outcome IS NOT NULL AND direction IS NOT NULL GROUP BY direction
             """)
@@ -485,7 +626,7 @@ class SignalLogger:
         try:
             rows = self._query("""
                 SELECT tp_source, COUNT(*) as total,
-                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN') THEN 1 ELSE 0 END) as wins
+                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN','PARTIAL_WIN','PARTIAL_WIN_FINAL','ESTIMATED_PARTIAL_WIN','ESTIMATED_PARTIAL_WIN_FINAL') THEN 1 ELSE 0 END) as wins
                 FROM signals WHERE outcome IS NOT NULL AND tp_source IS NOT NULL GROUP BY tp_source
                 ORDER BY total DESC
             """)
@@ -506,7 +647,7 @@ class SignalLogger:
             row = self._query("""
                 SELECT COUNT(*) as total,
                        SUM(CASE WHEN outcome IS NOT NULL THEN 1 ELSE 0 END) as resolved,
-                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN') THEN 1 ELSE 0 END) as wins,
+                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN','PARTIAL_WIN','PARTIAL_WIN_FINAL','ESTIMATED_PARTIAL_WIN','ESTIMATED_PARTIAL_WIN_FINAL') THEN 1 ELSE 0 END) as wins,
                        SUM(COALESCE(pnl_points, 0)) as total_pnl
                 FROM signals WHERE timestamp >= ?
             """, (since_iso,), fetchall=False)
@@ -526,7 +667,7 @@ class SignalLogger:
         try:
             row = self._query("""
                 SELECT COUNT(*) as total,
-                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN') THEN 1 ELSE 0 END) as wins
+                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN','PARTIAL_WIN','PARTIAL_WIN_FINAL','ESTIMATED_PARTIAL_WIN','ESTIMATED_PARTIAL_WIN_FINAL') THEN 1 ELSE 0 END) as wins
                 FROM signals WHERE outcome IS NOT NULL AND timestamp >= ?
             """, (since_iso,), fetchall=False)
             if not row or not row["total"]:
@@ -659,7 +800,7 @@ class SignalLogger:
                 w = self._query("""
                     SELECT COUNT(*) as cnt FROM pattern_alerts pa
                     JOIN signals s ON pa.matched_signal_id = s.id
-                    WHERE s.outcome IN ('WIN', 'ESTIMATED_WIN')
+                    WHERE s.outcome IN ('WIN', 'ESTIMATED_WIN', 'PARTIAL_WIN', 'PARTIAL_WIN_FINAL', 'ESTIMATED_PARTIAL_WIN', 'ESTIMATED_PARTIAL_WIN_FINAL')
                 """, fetchall=False)
                 wins = w["cnt"] if w else 0
             match_rate = round(matched / total * 100, 1) if total > 0 else 0.0

@@ -173,7 +173,7 @@ class ChecklistEngine:
     ) -> Dict[str, Any]:
         """
         Execute all 4 layers sequentially, derive direction, optionally run entry check,
-        apply all filters, and return the complete result dict.
+        apply all filters (including range + sweep logic), and return the complete result dict.
         """
         try:
             day_flags = self.get_day_flags()
@@ -195,25 +195,33 @@ class ChecklistEngine:
                 + layer4.get("score_contribution", 0)
             )
 
+            range_condition = layer2.get("range_condition", {})
+            liquidity_sweeps = layer3.get("liquidity_sweeps", [])
+            is_ranging = range_condition.get("is_ranging", False)
+
             entry = None
             entry_ready = False
             entry_confidence = None
             if score >= GRADE_B_SCORE and direction:
-                entry = self._entry.get_entry_result(direction, current_price, zone_levels=layer3.get("all_levels", []))
+                entry = self._entry.get_entry_result(
+                    direction, current_price,
+                    zone_levels=layer3.get("all_levels", []),
+                    range_condition=range_condition,
+                    liquidity_sweeps=liquidity_sweeps,
+                )
                 entry_ready = entry.get("entry_ready", False)
                 entry_confidence = entry.get("entry_confidence")
 
+            has_sweep = entry.get("has_liquidity_sweep", False) if entry else False
+
             if score >= GRADE_A_SCORE and entry_ready and entry_confidence == "full":
-                # All 4 layers + all 4 entry conditions = maximum conviction
                 decision = "FULL_SEND"
                 grade = "A"
             elif score >= GRADE_A_SCORE and entry_ready:
-                # All 4 layers + FVG/RR but missing BOS and/or SMT
-                # Downgrade to B — still a valid trade, just lower conviction
                 decision = "HALF_SIZE"
                 grade = "B"
                 logger.info(
-                    "Grade A→B: entry_confidence=%s (missing %s)",
+                    "Grade A->B: entry_confidence=%s (missing %s)",
                     entry_confidence,
                     "BOS+SMT" if entry_confidence == "base" else "BOS or SMT",
                 )
@@ -221,20 +229,25 @@ class ChecklistEngine:
                 decision = "HALF_SIZE"
                 grade = "B"
             elif score >= GRADE_B_SCORE and not entry_ready and direction:
-                # WAIT only makes sense when we know which direction to watch.
-                # Without a direction the setup is contradictory — treat as NO_TRADE.
                 decision = "WAIT"
                 grade = None
             else:
                 decision = "NO_TRADE"
                 grade = None
 
-            # Downgrade when direction comes from structure alone (reduced confidence).
-            # Grade A → Grade B, Grade B stays but size_label gets capped later.
             if direction_confidence == "reduced" and grade == "A":
                 grade = "B"
                 decision = "HALF_SIZE"
                 logger.info("Grade A downgraded to B — direction from structure alone")
+
+            # Range + no-sweep downgrade: when trending without a sweep, still
+            # allow the trade but mark it as lower confidence.  The entry_checker
+            # already blocks entries in ranging markets without a sweep.
+            if entry_ready and not has_sweep and not is_ranging:
+                if grade == "A" and entry_confidence == "no_sweep":
+                    grade = "B"
+                    decision = "HALF_SIZE"
+                    logger.info("Grade A->B: trending but no liquidity sweep confirmation")
 
             all_levels = layer3.get("all_levels", [])
             eqh_nearby = False
@@ -282,14 +295,18 @@ class ChecklistEngine:
                 "block_reason": None,
                 "is_news_day": news_data.get("is_news_day", False),
                 "next_news_event": news_data.get("next_event"),
+                "is_ranging": is_ranging,
+                "range_condition": range_condition,
+                "has_liquidity_sweep": has_sweep,
                 "_day_flags": day_flags,
             }
 
             result = self.apply_all_filters(result, news_data)
 
             logger.info(
-                "Checklist: score=%d dir=%s decision=%s grade=%s price=%.2f",
-                score, direction, result["decision"], result["grade"], current_price,
+                "Checklist: score=%d dir=%s decision=%s grade=%s price=%.2f ranging=%s sweep=%s",
+                score, direction, result["decision"], result["grade"],
+                current_price, is_ranging, has_sweep,
             )
             return result
 
@@ -362,7 +379,7 @@ class ChecklistEngine:
     # ─── filters ─────────────────────────────────────────────
 
     def apply_all_filters(self, result: Dict[str, Any], news_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Apply all safety filters — VIX hard stop, news blocking, day-of-week cautions."""
+        """Apply all safety filters — VIX hard stop, news blocking, range/sweep, day-of-week cautions."""
         try:
             vix_val = result["layer1"].get("vix_value") or 0
             if vix_val >= 30:
@@ -397,6 +414,25 @@ class ChecklistEngine:
 
             if result.get("direction_confidence") == "reduced":
                 result["caution_flags"].append("STRUCT-ONLY DIRECTION — macro conflicts")
+
+            # ── Range / consolidation cautions ──
+            range_cond = result.get("range_condition", {})
+            is_ranging = range_cond.get("is_ranging", False)
+            range_strength = range_cond.get("range_strength", "none")
+
+            if is_ranging:
+                adx_val = range_cond.get("adx_value", "?")
+                if range_strength == "strong":
+                    result["caution_flags"].append(
+                        f"STRONG RANGE — ADX {adx_val}, ATR compressing, sweep required"
+                    )
+                else:
+                    result["caution_flags"].append(
+                        f"MILD RANGE — ADX {adx_val}, reduced conviction"
+                    )
+
+            if not result.get("has_liquidity_sweep", False) and result.get("entry_ready") and not is_ranging:
+                result["caution_flags"].append("NO LIQUIDITY SWEEP — lower probability")
 
             return result
 
@@ -478,6 +514,8 @@ class ChecklistEngine:
             "decision": "NO_TRADE", "grade": None,
             "caution_flags": [], "block_reason": "checklist_error",
             "is_news_day": False, "next_news_event": None,
+            "is_ranging": False, "range_condition": {},
+            "has_liquidity_sweep": False,
         }
 
     def _send_system_alert(self, level: str, component: str, message: str) -> None:

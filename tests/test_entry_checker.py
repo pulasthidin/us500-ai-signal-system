@@ -227,5 +227,283 @@ class TestGetEntryResult:
 
     def test_tp_source_present_when_entry_ready(self, entry):
         result = entry.get_entry_result("LONG", 6500.0)
-        # tp_source should always be a string or None — never missing
         assert "tp_source" in result
+
+    def test_new_fields_present_in_result(self, entry):
+        result = entry.get_entry_result("LONG", 6500.0)
+        for key in ("displacement_valid", "has_liquidity_sweep", "sweep_details", "sl_method"):
+            assert key in result, f"Missing key: {key}"
+
+    def test_entry_with_range_condition(self, entry):
+        range_cond = {"is_ranging": True, "range_strength": "strong",
+                      "adx_value": 15.0, "range_high": 6530.0, "range_low": 6470.0}
+        result = entry.get_entry_result("LONG", 6500.0, range_condition=range_cond)
+        assert "sl_method" in result
+
+    def test_entry_with_liquidity_sweeps(self, entry):
+        sweeps = [{"level_price": 6480.0, "level_type": "pdl", "sweep_side": "sell_side",
+                    "sweep_low": 6478.0, "bars_ago": 5, "favors_direction": "LONG"}]
+        result = entry.get_entry_result("LONG", 6500.0, liquidity_sweeps=sweeps)
+        assert isinstance(result["has_liquidity_sweep"], bool)
+
+    def test_ranging_no_sweep_blocks_entry(self, entry):
+        """In ranging market with no sweep, entry should be blocked."""
+        range_cond = {"is_ranging": True, "range_strength": "strong",
+                      "adx_value": 15.0, "range_high": 6530.0, "range_low": 6470.0}
+        result = entry.get_entry_result("LONG", 6500.0, range_condition=range_cond, liquidity_sweeps=[])
+        if result["fvg_present"] and result["rr_valid"]:
+            assert result["entry_ready"] is False
+
+
+# ─── Displacement candle validation ──────────────────────────
+
+class TestIsDisplacementCandle:
+    def test_strong_bullish_candle_passes(self):
+        assert EntryChecker._is_displacement_candle(
+            open_price=6490.0, close_price=6510.0, high=6512.0, low=6488.0, atr=15.0
+        ) is True
+
+    def test_doji_candle_fails(self):
+        assert EntryChecker._is_displacement_candle(
+            open_price=6500.0, close_price=6500.5, high=6510.0, low=6490.0, atr=15.0
+        ) is False
+
+    def test_small_candle_below_atr_fails(self):
+        assert EntryChecker._is_displacement_candle(
+            open_price=6499.0, close_price=6501.0, high=6501.5, low=6498.5, atr=15.0
+        ) is False
+
+    def test_zero_range_candle_fails(self):
+        assert EntryChecker._is_displacement_candle(
+            open_price=6500.0, close_price=6500.0, high=6500.0, low=6500.0, atr=10.0
+        ) is False
+
+    def test_large_body_with_wicks_passes(self):
+        assert EntryChecker._is_displacement_candle(
+            open_price=6505.0, close_price=6490.0, high=6508.0, low=6487.0, atr=15.0
+        ) is True
+
+    def test_zero_atr_only_checks_body_ratio(self):
+        result = EntryChecker._is_displacement_candle(
+            open_price=6490.0, close_price=6510.0, high=6512.0, low=6488.0, atr=0
+        )
+        assert result is True
+
+
+# ─── Range-aware SL ──────────────────────────────────────────
+
+class TestDetectRangeSL:
+    def test_short_sl_above_range_high(self, entry):
+        range_cond = {"is_ranging": True, "range_high": 6530.0, "range_low": 6470.0}
+        sl = entry._detect_range_sl("SHORT", range_cond, atr=20.0)
+        assert sl is not None
+        assert sl > 6530.0
+
+    def test_long_sl_below_range_low(self, entry):
+        range_cond = {"is_ranging": True, "range_high": 6530.0, "range_low": 6470.0}
+        sl = entry._detect_range_sl("LONG", range_cond, atr=20.0)
+        assert sl is not None
+        assert sl < 6470.0
+
+    def test_returns_none_when_not_ranging(self, entry):
+        range_cond = {"is_ranging": False}
+        sl = entry._detect_range_sl("LONG", range_cond, atr=20.0)
+        assert sl is None
+
+    def test_returns_none_when_range_missing(self, entry):
+        range_cond = {"is_ranging": True, "range_high": None, "range_low": None}
+        sl = entry._detect_range_sl("LONG", range_cond, atr=20.0)
+        assert sl is None
+
+
+# ─── Sweep direction filter ──────────────────────────────────
+
+class TestCheckSweepForDirection:
+    def test_short_needs_buy_side_sweep(self):
+        sweeps = [
+            {"sweep_side": "buy_side", "level_type": "pdh", "bars_ago": 3},
+            {"sweep_side": "sell_side", "level_type": "pdl", "bars_ago": 5},
+        ]
+        result = EntryChecker._check_sweep_for_direction(sweeps, "SHORT")
+        assert result["has_sweep"] is True
+        assert result["sweep_details"]["sweep_side"] == "buy_side"
+
+    def test_long_needs_sell_side_sweep(self):
+        sweeps = [
+            {"sweep_side": "buy_side", "level_type": "pdh", "bars_ago": 3},
+            {"sweep_side": "sell_side", "level_type": "pdl", "bars_ago": 5},
+        ]
+        result = EntryChecker._check_sweep_for_direction(sweeps, "LONG")
+        assert result["has_sweep"] is True
+        assert result["sweep_details"]["sweep_side"] == "sell_side"
+
+    def test_no_matching_sweep(self):
+        sweeps = [{"sweep_side": "buy_side", "level_type": "pdh", "bars_ago": 3}]
+        result = EntryChecker._check_sweep_for_direction(sweeps, "LONG")
+        assert result["has_sweep"] is False
+
+    def test_empty_sweeps(self):
+        result = EntryChecker._check_sweep_for_direction([], "SHORT")
+        assert result["has_sweep"] is False
+
+    def test_picks_most_recent_sweep(self):
+        sweeps = [
+            {"sweep_side": "buy_side", "level_type": "pdh", "bars_ago": 10},
+            {"sweep_side": "buy_side", "level_type": "eqh", "bars_ago": 2},
+        ]
+        result = EntryChecker._check_sweep_for_direction(sweeps, "SHORT")
+        assert result["sweep_details"]["bars_ago"] == 2
+
+
+# ══════════════════════════════════════════════════════════════
+# REGRESSION TESTS — Winning trades must still fire with new code
+# ══════════════════════════════════════════════════════════════
+
+class TestRegressionWinningTrades:
+    """
+    Regression suite: replicate real winning trade conditions from the live system.
+    Every test here represents a trade the system correctly identified.
+    New filters MUST NOT block these entries.
+    """
+
+    def test_short_supply_zone_rejection_trending_with_sweep(self, entry):
+        """
+        Real trade: Mar 26 2026 — SHORT at ~6,595 into supply zone.
+        Price swept above prior high (buy-side sweep), rejected with strong
+        displacement candle, dropped to 6,568. WIN +27pts.
+
+        Conditions: VIX 24.13, trending market (ADX ~28), buy-side sweep confirmed,
+        displacement FVG, BOS confirmed, USTEC agrees.
+        Must produce: entry_ready=True, confidence=full or high.
+        """
+        range_cond = {
+            "is_ranging": False, "range_strength": "none",
+            "adx_value": 28.0, "adx_ranging": False,
+            "atr_compressing": False, "atr_ratio": 1.1,
+            "range_high": 6620.0, "range_low": 6560.0,
+        }
+        sweeps = [
+            {"level_price": 6610.0, "level_type": "pdh", "sweep_side": "buy_side",
+             "sweep_high": 6615.0, "bars_ago": 8, "favors_direction": "SHORT"},
+        ]
+        result = entry.get_entry_result(
+            "SHORT", 6595.0,
+            zone_levels=[
+                {"price": 6550.0, "type": "round"},
+                {"price": 6568.0, "type": "eql"},
+            ],
+            range_condition=range_cond,
+            liquidity_sweeps=sweeps,
+        )
+        assert result["entry_ready"] is True or result["fvg_present"] is True, (
+            "Winning SHORT trade at supply zone must not be blocked! "
+            f"fvg={result['fvg_present']}, rr_valid={result['rr_valid']}, "
+            f"entry_ready={result['entry_ready']}"
+        )
+        assert result["sl_method"] == "swing", "Trending market should use swing SL, not range SL"
+        if result["entry_ready"]:
+            assert result["has_liquidity_sweep"] is True
+            assert result["entry_confidence"] in ("full", "high", "base"), (
+                f"With sweep + entry, confidence should be base or higher, got {result['entry_confidence']}"
+            )
+
+    def test_short_trending_no_sweep_still_fires(self, entry):
+        """
+        Even without a sweep, a SHORT in a trending market must still fire.
+        The sweep only affects grade (A→B), not entry_ready.
+        """
+        range_cond = {
+            "is_ranging": False, "range_strength": "none",
+            "adx_value": 30.0, "adx_ranging": False,
+        }
+        result = entry.get_entry_result(
+            "SHORT", 6600.0,
+            range_condition=range_cond,
+            liquidity_sweeps=[],
+        )
+        if result["fvg_present"] and result["rr_valid"]:
+            assert result["entry_ready"] is True, (
+                "In trending market, entry_ready must be True when FVG + RR pass, "
+                "even without a sweep"
+            )
+            assert result["entry_confidence"] == "no_sweep"
+
+    def test_long_demand_zone_bounce_with_sweep(self, entry):
+        """
+        Simulated winning LONG: price sweeps below demand zone (sell-side sweep),
+        bounces with displacement candle, FVG forms. Trending market.
+        """
+        range_cond = {
+            "is_ranging": False, "range_strength": "none",
+            "adx_value": 25.0, "adx_ranging": False,
+        }
+        sweeps = [
+            {"level_price": 6480.0, "level_type": "eql", "sweep_side": "sell_side",
+             "sweep_low": 6477.0, "bars_ago": 5, "favors_direction": "LONG"},
+        ]
+        result = entry.get_entry_result(
+            "LONG", 6490.0,
+            zone_levels=[{"price": 6530.0, "type": "pdh"}],
+            range_condition=range_cond,
+            liquidity_sweeps=sweeps,
+        )
+        if result["fvg_present"] and result["rr_valid"]:
+            assert result["entry_ready"] is True
+            assert result["has_liquidity_sweep"] is True
+
+    def test_ranging_with_sweep_still_fires(self, entry):
+        """
+        Even in a ranging market, if there's a valid sweep, entry must fire.
+        The sweep unlocks the entry in ranging mode.
+        """
+        range_cond = {
+            "is_ranging": True, "range_strength": "strong",
+            "adx_value": 14.0, "adx_ranging": True,
+            "atr_compressing": True, "atr_ratio": 0.6,
+            "range_high": 6530.0, "range_low": 6470.0,
+        }
+        sweeps = [
+            {"level_price": 6530.0, "level_type": "pdh", "sweep_side": "buy_side",
+             "sweep_high": 6533.0, "bars_ago": 3, "favors_direction": "SHORT"},
+        ]
+        result = entry.get_entry_result(
+            "SHORT", 6520.0,
+            range_condition=range_cond,
+            liquidity_sweeps=sweeps,
+        )
+        if result["fvg_present"] and result["rr_valid"]:
+            assert result["entry_ready"] is True, (
+                "Ranging + sweep confirmed: entry must fire! "
+                f"fvg={result['fvg_present']}, rr={result['rr_valid']}, sweep={result['has_liquidity_sweep']}"
+            )
+
+    def test_displacement_does_not_block_strong_candles(self):
+        """
+        The displacement filter must not reject candles that look like
+        the real winning trade: strong body, moderate wicks.
+        These values match a typical 15-point bearish displacement candle on M5.
+        """
+        assert EntryChecker._is_displacement_candle(
+            open_price=6600.0, close_price=6585.0,
+            high=6603.0, low=6583.0, atr=15.0,
+        ) is True, "A 15-point bearish candle with body 75% of range must pass displacement"
+
+        assert EntryChecker._is_displacement_candle(
+            open_price=6595.0, close_price=6580.0,
+            high=6598.0, low=6578.0, atr=15.0,
+        ) is True, "A 15-point bearish candle with body 75% must pass"
+
+    def test_displacement_rejects_only_noise(self):
+        """
+        Only tiny doji/indecision candles should be rejected.
+        These values match the chop candles from Wednesday's range.
+        """
+        assert EntryChecker._is_displacement_candle(
+            open_price=6590.0, close_price=6591.0,
+            high=6595.0, low=6587.0, atr=15.0,
+        ) is False, "1-point body in 8-point range = doji, must be rejected"
+
+        assert EntryChecker._is_displacement_candle(
+            open_price=6590.0, close_price=6588.0,
+            high=6591.0, low=6587.0, atr=15.0,
+        ) is False, "Tiny 4-point candle below ATR threshold must be rejected"

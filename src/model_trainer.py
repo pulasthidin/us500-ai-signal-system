@@ -316,28 +316,60 @@ class ModelTrainer:
         "wyckoff": {"markup": 1, "markdown": -1, "unclear": 0},
         "delta_direction": {"buyers": 1, "sellers": -1, "mixed": 0},
         "divergence": {"bullish": 1, "bearish": -1, "none": 0},
-        "zone_type": {"round": 1, "pdh": 2, "pdl": 3, "poc": 4},
-        "zone_direction": {"support": 1, "resistance": -1},
+        "zone_type": {"round": 1, "pdh": 2, "pdl": 3, "poc": 4, "eqh": 5, "eql": 6, "asian_high": 7, "asian_low": 8},
+        "zone_direction": {"support": 1, "resistance": -1, "at_level": 0},
         "groq_sentiment": {"BULLISH": 1, "BEARISH": -1, "NEUTRAL": 0},
         "grade": {"A": 2, "B": 1},
+        "tp_source": {"eqh": 5, "eql": 5, "pdh": 4, "pdl": 4, "round": 3, "poc": 2, "atr": 1},
+        "entry_confidence": {"full": 4, "high": 3, "base": 2, "no_sweep": 1},
+        "direction_confidence": {"high": 3, "medium": 2, "reduced": 1},
+        "range_strength": {"strong": 2, "mild": 1, "none": 0},
+        "sweep_side": {"buy_side": -1, "sell_side": 1},
+        "sweep_level_type": {"pdh": 5, "pdl": 5, "eqh": 4, "eql": 4, "asian_high": 3, "asian_low": 3, "round": 1},
+        "sl_method": {"range": 2, "swing": 1, "fvg": 1, "atr": 0},
     }
 
     META_FEATURE_COLS = [
+        # --- macro / VIX ---
         "vix_level", "vix_pct", "bullish_count", "bearish_count",
+        # --- H4 structure ---
         "above_ema200", "above_ema50", "choch_recent",
-        "at_zone", "zone_distance",
+        "ob_bullish_nearby", "ob_bearish_nearby",
+        # --- zones ---
+        "at_zone", "zone_distance", "eqh_nearby", "eql_nearby",
+        # --- orderflow ---
         "confirms_bias", "vix_spiking_now",
+        # --- entry ---
         "fvg_present", "m5_bos", "ustec_agrees", "rr", "atr",
+        "sl_points", "tp_points",
+        "displacement_valid", "has_liquidity_sweep",
+        "fvg_age_bars", "fvg_size_points",
+        # --- range / consolidation ---
+        "is_ranging", "adx_value", "atr_compressing",
+        "range_size_points", "price_in_range_pct",
+        # --- AMD / Asian session ---
+        "asian_range_size",
+        "sweep_bars_ago",
+        # --- time / context ---
         "score", "is_monday", "is_friday", "is_news_day",
+        "hour_utc", "data_version",
+        # --- encoded categoricals ---
         "direction_enc", "macro_bias_enc", "session_enc", "vix_bucket_enc",
         "vix_direction_bias_enc", "us10y_direction_enc", "oil_direction_enc",
         "dxy_direction_enc", "rut_direction_enc", "structure_bias_enc",
         "h4_bos_enc", "wyckoff_enc", "delta_direction_enc", "divergence_enc",
         "zone_type_enc", "zone_direction_enc", "groq_sentiment_enc", "grade_enc",
+        "tp_source_enc", "entry_confidence_enc", "direction_confidence_enc",
+        "range_strength_enc", "sweep_side_enc", "sweep_level_type_enc", "sl_method_enc",
     ]
 
     def prepare_checklist_features(self, signals_df: pd.DataFrame) -> pd.DataFrame:
-        """Convert all categorical checklist fields to numeric for ML consumption."""
+        """Convert all categorical checklist fields to numeric for ML consumption.
+
+        NaN-aware: XGBoost and LightGBM handle NaN natively, so old signals
+        with NULL values in new columns (data_version=1) work without imputation.
+        Only boolean columns are filled with 0 (False) when missing.
+        """
         try:
             df = signals_df.copy()
 
@@ -352,16 +384,26 @@ class ModelTrainer:
                 "above_ema200", "above_ema50", "choch_recent", "at_zone",
                 "confirms_bias", "vix_spiking_now", "fvg_present", "m5_bos",
                 "ustec_agrees", "is_monday", "is_friday", "is_news_day",
+                "ob_bullish_nearby", "ob_bearish_nearby", "eqh_nearby", "eql_nearby",
+                "displacement_valid", "has_liquidity_sweep",
+                "is_ranging", "atr_compressing",
             ]
             for bc in bool_cols:
                 if bc in df.columns:
                     df[bc] = df[bc].fillna(0).astype(float)
 
-            numeric_cols = ["vix_level", "vix_pct", "bullish_count", "bearish_count",
-                            "zone_distance", "rr", "atr", "score"]
+            numeric_cols = [
+                "vix_level", "vix_pct", "bullish_count", "bearish_count",
+                "zone_distance", "rr", "atr", "score",
+                "sl_points", "tp_points", "tp1_points",
+                "adx_value", "fvg_age_bars", "fvg_size_points",
+                "range_size_points", "price_in_range_pct",
+                "asian_range_size", "sweep_bars_ago",
+                "hour_utc", "data_version",
+            ]
             for nc in numeric_cols:
                 if nc in df.columns:
-                    df[nc] = pd.to_numeric(df[nc], errors="coerce").fillna(0)
+                    df[nc] = pd.to_numeric(df[nc], errors="coerce")
 
             available = [c for c in self.META_FEATURE_COLS if c in df.columns]
             missing = [c for c in self.META_FEATURE_COLS if c not in df.columns]
@@ -401,9 +443,16 @@ class ModelTrainer:
                 logger.warning("Feature prep returned empty")
                 return False
 
+            # PARTIAL_WIN (label=0, outcome='PARTIAL_WIN') = direction correct = treat as win
+            # LOSS (label=-1) = direction wrong = 0
+            # WIN (label=1) = full target hit = 1
             y_raw = data["outcome_label"].values
+            outcomes = data["outcome"].values
             label_map = {-1: 0, 1: 1}
-            y = np.array([label_map.get(int(v), 0) for v in y_raw])
+            y = np.array([
+                1 if "PARTIAL_WIN" in str(outcomes[i]) else label_map.get(int(v), 0)
+                for i, v in enumerate(y_raw)
+            ])
             X = X_df
             feature_cols = list(X_df.columns)
 
