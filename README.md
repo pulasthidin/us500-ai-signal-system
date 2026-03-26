@@ -3,7 +3,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Code Quality](https://github.com/pulasthidin/us500-ai-signal-system/actions/workflows/quality.yml/badge.svg)](https://github.com/pulasthidin/us500-ai-signal-system/actions)
-[![Tests](https://img.shields.io/badge/tests-217%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-443%20passing-brightgreen.svg)]()
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6.svg)]()
 
 A fully automated intraday trading signal system for US500 (S&P 500) built on a 4-layer SMC confluence checklist, self-evolving ML models, and Telegram-only alerts. No UI. No dashboards. Just signals to your phone.
@@ -185,7 +185,7 @@ us500-ai-signal-system/
 │   ├── evolution_manager.py     # 4-stage auto-evolution
 │   └── pattern_scanner.py       # Early warning pattern matching
 │
-├── tests/                       # 217 unit tests
+├── tests/                       # 443 unit tests
 ├── notebooks/
 │   └── 01_data_fetcher.ipynb    # Data download + feature engineering
 │
