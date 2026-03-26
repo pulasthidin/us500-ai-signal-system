@@ -33,7 +33,7 @@ This project follows these conventions:
 python -m pytest tests/ -v
 ```
 
-All 217 tests must pass before any change is accepted.
+All 443 tests must pass before any change is accepted.
 
 ## License
 
