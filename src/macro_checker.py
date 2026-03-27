@@ -270,9 +270,17 @@ class MacroChecker:
             macro_data = self.fetch_macro_data()
 
             vix_info = macro_data.get("vix", {})
-            vix_value = vix_info.get("value") if vix_info.get("value") is not None else 0.0
+            vix_raw = vix_info.get("value")
             vix_pct = vix_info.get("pct_change") if vix_info.get("pct_change") is not None else 0.0
 
+            if vix_raw is None:
+                logger.warning("VIX value unavailable — blocking signals for safety")
+                result = self._fallback_layer1()
+                result["trade_allowed"] = False
+                result["block_reason"] = "VIX data unavailable"
+                return result
+
+            vix_value = float(vix_raw)
             bucket = self.get_vix_bucket(vix_value)
             vix_dir_bias = self.get_vix_direction_bias(vix_pct)
             bias_result = self.calculate_macro_bias(macro_data)

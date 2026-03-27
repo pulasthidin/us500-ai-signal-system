@@ -14,6 +14,7 @@ from src.outcome_tracker import OutcomeTracker, CHECKPOINT_PATH
 def tracker(mock_ctrader, mock_alert_bot):
     signal_logger = MagicMock()
     signal_logger.get_all_null_outcome_signals.return_value = []
+    signal_logger.get_partial_win_signals.return_value = []
     signal_logger.get_pending_signals.return_value = []
     return OutcomeTracker(mock_ctrader, us500_id=1, signal_logger=signal_logger, alert_bot=mock_alert_bot)
 
@@ -212,6 +213,38 @@ class TestStartupCatchup:
         result = tracker.run_startup_catchup()
         assert result["checked"] >= 1 or result["estimated"] >= 1
         tracker._signal_logger.update_outcome.assert_called()
+
+
+    def test_resolves_partial_win_phase2_on_startup(self, tracker):
+        """PARTIAL_WIN signals should be resolved during startup catchup (Phase 2)."""
+        now = datetime.now(timezone.utc)
+        n = 100
+        bars = pd.DataFrame({
+            "timestamp": pd.date_range(now - timedelta(hours=9), periods=n, freq="5min", tz="UTC"),
+            "open": [6500] * n, "high": [6510] * n,
+            "low": [6470] * n, "close": [6490] * n, "volume": [1000] * n,
+        })
+        tracker._ctrader.fetch_bars = MagicMock(return_value=bars)
+
+        partial_signal = {
+            "id": 10, "direction": "SHORT", "entry_price": 6520.0,
+            "sl_price": 6535.0, "tp_price": 6490.0, "tp1_price": 6505.0,
+            "outcome": "PARTIAL_WIN", "tp1_hit": 1,
+            "tp1_hit_timestamp": (now - timedelta(hours=8)).isoformat(),
+            "timestamp": (now - timedelta(hours=8, minutes=30)).isoformat(),
+        }
+        tracker._signal_logger.get_all_null_outcome_signals.return_value = []
+        tracker._signal_logger.get_partial_win_signals.return_value = [partial_signal]
+
+        result = tracker.run_startup_catchup()
+        assert result["checked"] >= 1
+        assert result["upgraded"] >= 1
+
+    def test_catchup_summary_includes_upgraded_key(self, tracker):
+        tracker._signal_logger.get_all_null_outcome_signals.return_value = []
+        tracker._signal_logger.get_partial_win_signals.return_value = []
+        result = tracker.run_startup_catchup()
+        assert "upgraded" in result
 
 
 class TestCheckpoint:

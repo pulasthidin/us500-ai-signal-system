@@ -381,6 +381,12 @@ class ChecklistEngine:
     def apply_all_filters(self, result: Dict[str, Any], news_data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply all safety filters — VIX hard stop, news blocking, range/sweep, day-of-week cautions."""
         try:
+            if not result["layer1"].get("trade_allowed", True):
+                result["decision"] = "NO_TRADE"
+                result["block_reason"] = result["layer1"].get("block_reason", "Macro data unavailable")
+                result["grade"] = None
+                return result
+
             vix_val = result["layer1"].get("vix_value") or 0
             if vix_val >= 30:
                 result["decision"] = "HARD_STOP"

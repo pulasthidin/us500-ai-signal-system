@@ -1,5 +1,6 @@
 """Tests for the TP1 partial profit system — entry calculation, outcome state machine, DB persistence."""
 
+import os
 import pytest
 import pandas as pd
 import numpy as np
@@ -81,6 +82,7 @@ def _make_bars(prices):
 def tracker(mock_ctrader, mock_alert_bot):
     sl = MagicMock()
     sl.get_all_null_outcome_signals.return_value = []
+    sl.get_partial_win_signals.return_value = []
     sl.get_pending_signals.return_value = []
     return OutcomeTracker(mock_ctrader, us500_id=1, signal_logger=sl, alert_bot=mock_alert_bot)
 
@@ -197,6 +199,96 @@ class TestPhase1Long:
         assert result["outcome"] == "WIN"
 
 
+class TestPhase2BreakevenBeforeTP2:
+    """TP1 hit -> price returns to BE (SL at entry) -> later TP2 reached.
+    This must NOT be a final WIN — the remaining half was stopped at breakeven."""
+
+    def test_be_hit_before_tp2_on_different_bars(self, tracker):
+        """BE bar comes before TP2 bar — trade must finalize as PARTIAL_WIN_FINAL."""
+        signal = _make_signal("SHORT", 6500, 6515, 6475, tp1=6490, outcome="PARTIAL_WIN")
+        signal["tp1_hit_timestamp"] = "2025-03-20T10:10:00+00:00"
+        signal["outcome_timestamp"] = "2025-03-20T10:10:00+00:00"
+        bars = pd.DataFrame({
+            "timestamp": pd.date_range("2025-03-20T10:10", periods=6, freq="5min", tz="UTC"),
+            "open": [6492, 6495, 6498, 6497, 6490, 6480],
+            "high": [6495, 6498, 6502, 6498, 6492, 6485],
+            "low": [6488, 6492, 6495, 6490, 6480, 6470],
+            "close": [6494, 6497, 6500, 6491, 6482, 6472],
+            "volume": [1000] * 6,
+        })
+        result = tracker.triple_barrier_check(signal, bars)
+        assert result is not None
+        assert result["outcome"] == "PARTIAL_WIN_FINAL"
+
+    def test_be_and_tp2_same_bar_conservative(self, tracker):
+        """BE and TP2 both hit on same bar — conservatively finalize as PARTIAL_WIN_FINAL."""
+        signal = _make_signal("SHORT", 6500, 6515, 6475, tp1=6490, outcome="PARTIAL_WIN")
+        signal["tp1_hit_timestamp"] = "2025-03-20T10:10:00+00:00"
+        signal["outcome_timestamp"] = "2025-03-20T10:10:00+00:00"
+        bars = pd.DataFrame({
+            "timestamp": pd.date_range("2025-03-20T10:10", periods=3, freq="5min", tz="UTC"),
+            "open": [6492, 6495, 6490],
+            "high": [6495, 6498, 6505],  # bar 3: high >= 6500 (BE hit)
+            "low": [6488, 6492, 6470],   # bar 3: low <= 6475 (TP2 hit)
+            "close": [6494, 6497, 6480],
+            "volume": [1000] * 3,
+        })
+        result = tracker.triple_barrier_check(signal, bars)
+        assert result is not None
+        assert result["outcome"] == "PARTIAL_WIN_FINAL"
+
+    def test_long_be_hit_before_tp2(self, tracker):
+        """LONG direction: BE hit first -> PARTIAL_WIN_FINAL, not WIN."""
+        signal = _make_signal("LONG", 6500, 6485, 6525, tp1=6510, outcome="PARTIAL_WIN")
+        signal["tp1_hit_timestamp"] = "2025-03-20T10:10:00+00:00"
+        signal["outcome_timestamp"] = "2025-03-20T10:10:00+00:00"
+        bars = pd.DataFrame({
+            "timestamp": pd.date_range("2025-03-20T10:10", periods=5, freq="5min", tz="UTC"),
+            "open": [6512, 6508, 6502, 6510, 6520],
+            "high": [6515, 6510, 6505, 6515, 6530],
+            "low": [6508, 6505, 6498, 6508, 6518],  # bar 3: low <= 6500 (BE hit)
+            "close": [6510, 6506, 6500, 6512, 6528],
+            "volume": [1000] * 5,
+        })
+        result = tracker.triple_barrier_check(signal, bars)
+        assert result is not None
+        assert result["outcome"] == "PARTIAL_WIN_FINAL"
+
+    def test_long_be_and_tp2_same_bar_conservative(self, tracker):
+        """LONG: both BE and TP2 on same bar -> conservative PARTIAL_WIN_FINAL."""
+        signal = _make_signal("LONG", 6500, 6485, 6525, tp1=6510, outcome="PARTIAL_WIN")
+        signal["tp1_hit_timestamp"] = "2025-03-20T10:10:00+00:00"
+        signal["outcome_timestamp"] = "2025-03-20T10:10:00+00:00"
+        bars = pd.DataFrame({
+            "timestamp": pd.date_range("2025-03-20T10:10", periods=2, freq="5min", tz="UTC"),
+            "open": [6512, 6510],
+            "high": [6515, 6530],   # bar 2: high >= 6525 (TP2 hit)
+            "low": [6508, 6498],    # bar 2: low <= 6500 (BE hit)
+            "close": [6510, 6520],
+            "volume": [1000] * 2,
+        })
+        result = tracker.triple_barrier_check(signal, bars)
+        assert result is not None
+        assert result["outcome"] == "PARTIAL_WIN_FINAL"
+
+    def test_partial_win_final_not_requeuable(self, tracker, tmp_path):
+        """Once finalized as PARTIAL_WIN_FINAL, the signal must NOT re-enter pending queue."""
+        from src.signal_logger import SignalLogger
+        import sqlite3
+        sl = SignalLogger()
+        sl._db_path = str(tmp_path / "test.db")
+        sl.init_db()
+        conn = sqlite3.connect(sl._db_path)
+        conn.execute(
+            """INSERT INTO signals (timestamp, direction, outcome, tp1_hit, save_status)
+               VALUES ('2025-01-01', 'SHORT', 'PARTIAL_WIN_FINAL', 1, 'complete')"""
+        )
+        conn.commit()
+        conn.close()
+        pending = sl.get_pending_signals()
+        assert len(pending) == 0
+
+
 class TestNoTP1FallsBackCleanly:
     def test_no_tp1_uses_old_behavior(self, tracker):
         signal = _make_signal("SHORT", 6500, 6515, 6475, tp1=None)
@@ -231,8 +323,8 @@ class TestTP1DBColumns:
     def test_pending_signals_includes_partial_win(self, logger_db):
         import sqlite3
         conn = sqlite3.connect(logger_db._db_path)
-        conn.execute("""INSERT INTO signals (timestamp, direction, outcome, tp1_hit, save_status)
-                        VALUES ('2025-01-01', 'SHORT', 'PARTIAL_WIN', 1, 'complete')""")
+        conn.execute("""INSERT INTO signals (timestamp, direction, outcome, tp1_hit, tp1_hit_timestamp, save_status)
+                        VALUES ('2025-01-01', 'SHORT', 'PARTIAL_WIN', 1, '2025-01-01T00:00:00+00:00', 'complete')""")
         conn.commit()
         conn.close()
         pending = logger_db.get_pending_signals()
@@ -263,6 +355,7 @@ class TestTP1DBColumns:
         r = c.execute("SELECT * FROM signals WHERE id=1").fetchone()
         c.close()
         assert r["outcome"] == "PARTIAL_WIN"
+        assert r["outcome_label"] == 1
         assert r["tp1_hit"] == 1
         assert r["tp1_hit_timestamp"] == "2025-01-01T10:00:00"
 
@@ -270,27 +363,28 @@ class TestTP1DBColumns:
         import sqlite3
         conn = sqlite3.connect(logger_db._db_path)
         conn.execute("""INSERT INTO signals (timestamp, direction, outcome, outcome_label, save_status)
-                        VALUES ('2025-01-01', 'SHORT', 'PARTIAL_WIN_FINAL', 0, 'complete')""")
+                        VALUES ('2025-01-01', 'SHORT', 'PARTIAL_WIN_FINAL', 1, 'complete')""")
         conn.execute("""INSERT INTO signals (timestamp, direction, outcome, outcome_label, save_status)
                         VALUES ('2025-01-02', 'SHORT', 'LOSS', -1, 'complete')""")
         conn.commit()
         conn.close()
         wr = logger_db.get_win_rate()
-        assert wr == 50.0  # 1 partial win, 1 loss = 50%
+        assert wr == 50.0  # 1 partial win (label=1), 1 loss (label=-1) = 50%
 
 
 # ─── ML trainer PARTIAL_WIN handling ─────────────────────────
 
 class TestMLPartialWin:
-    def test_partial_win_labeled_as_win(self):
-        from src.model_trainer import ModelTrainer
+    def test_labels_map_cleanly_to_binary(self):
+        """With consistent outcome_label values, M3 needs no string-matching hack."""
         import numpy as np
-        t = ModelTrainer()
-        outcomes = np.array(["WIN", "PARTIAL_WIN", "PARTIAL_WIN_FINAL", "LOSS", "ESTIMATED_PARTIAL_WIN"])
-        labels = np.array([1, 0, 0, -1, 0])
-        label_map = {-1: 0, 1: 1}
-        y = np.array([
-            1 if "PARTIAL_WIN" in str(outcomes[i]) else label_map.get(int(v), 0)
-            for i, v in enumerate(labels)
-        ])
+        # outcome_label: 1=direction correct (WIN/PARTIAL_WIN*), -1=LOSS, 0=TIMEOUT
+        labels = np.array([1, 1, 1, -1, 1])  # WIN, PARTIAL_WIN, PARTIAL_WIN_FINAL, LOSS, ESTIMATED_PARTIAL_WIN
+        y = (labels == 1).astype(int)
         assert list(y) == [1, 1, 1, 0, 1]
+
+    def test_timeout_excluded_not_counted_as_win(self):
+        import numpy as np
+        labels = np.array([1, -1, 0])  # WIN, LOSS, TIMEOUT
+        y = (labels == 1).astype(int)
+        assert list(y) == [1, 0, 0]

@@ -214,6 +214,16 @@ class SignalLogger:
                 conn.execute(f"ALTER TABLE signals ADD COLUMN {col_name} {col_type}")
                 logger.info("Migration: added column '%s' to signals table", col_name)
 
+        # Data migration: PARTIAL_WIN variants had outcome_label=0 (wrong);
+        # direction was correct so label should be 1.
+        if "outcome_label" in existing:
+            fixed = conn.execute(
+                "UPDATE signals SET outcome_label = 1 "
+                "WHERE outcome LIKE '%PARTIAL_WIN%' AND outcome_label != 1"
+            ).rowcount
+            if fixed:
+                logger.info("Migration: fixed outcome_label for %d PARTIAL_WIN rows (0 -> 1)", fixed)
+
     # ─── helpers ─────────────────────────────────────────────
 
     def _connect(self) -> sqlite3.Connection:
@@ -469,7 +479,7 @@ class SignalLogger:
             self._execute(
                 """
                 UPDATE signals
-                SET outcome = 'PARTIAL_WIN', outcome_label = 0,
+                SET outcome = 'PARTIAL_WIN', outcome_label = 1,
                     tp1_hit = 1, tp1_hit_timestamp = ?
                 WHERE id = ?
                 """,
@@ -484,16 +494,16 @@ class SignalLogger:
     def get_pending_signals(self) -> List[Dict[str, Any]]:
         """Return signals needing outcome resolution:
         - outcome IS NULL: never checked yet (wait for check delay)
-        - outcome = 'PARTIAL_WIN': TP1 hit, need to check for TP2 upgrade
+        - outcome = 'PARTIAL_WIN': TP1 hit, need to check for TP2 upgrade (same delay)
         """
         try:
             cutoff = (datetime.now(timezone.utc) - timedelta(seconds=OUTCOME_CHECK_DELAY_SECONDS)).isoformat()
             rows = self._query(
                 """SELECT * FROM signals
                    WHERE (outcome IS NULL AND timestamp < ?)
-                      OR (outcome = 'PARTIAL_WIN' AND tp1_hit = 1)
+                      OR (outcome = 'PARTIAL_WIN' AND tp1_hit = 1 AND tp1_hit_timestamp < ?)
                    ORDER BY timestamp ASC""",
-                (cutoff,),
+                (cutoff, cutoff),
             )
             return [dict(r) for r in rows]
         except Exception as exc:
@@ -545,13 +555,11 @@ class SignalLogger:
             return 0
 
     def get_win_rate(self) -> float:
-        """Win % among labelled signals.
-        Counts WIN, ESTIMATED_WIN, and PARTIAL_WIN variants as wins.
-        """
+        """Win % among resolved signals. outcome_label=1 means direction correct."""
         try:
             row = self._query(
                 """SELECT COUNT(*) as total,
-                          SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN','PARTIAL_WIN','PARTIAL_WIN_FINAL','ESTIMATED_PARTIAL_WIN','ESTIMATED_PARTIAL_WIN_FINAL') THEN 1 ELSE 0 END) as wins
+                          SUM(CASE WHEN outcome_label = 1 THEN 1 ELSE 0 END) as wins
                    FROM signals WHERE outcome IS NOT NULL""",
                 fetchall=False,
             )
@@ -567,7 +575,7 @@ class SignalLogger:
         try:
             rows = self._query("""
                 SELECT session, COUNT(*) as total,
-                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN','PARTIAL_WIN','PARTIAL_WIN_FINAL','ESTIMATED_PARTIAL_WIN','ESTIMATED_PARTIAL_WIN_FINAL') THEN 1 ELSE 0 END) as wins
+                       SUM(CASE WHEN outcome_label = 1 THEN 1 ELSE 0 END) as wins
                 FROM signals WHERE outcome IS NOT NULL GROUP BY session
             """)
             return {
@@ -586,7 +594,7 @@ class SignalLogger:
         try:
             rows = self._query("""
                 SELECT grade, COUNT(*) as total,
-                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN','PARTIAL_WIN','PARTIAL_WIN_FINAL','ESTIMATED_PARTIAL_WIN','ESTIMATED_PARTIAL_WIN_FINAL') THEN 1 ELSE 0 END) as wins
+                       SUM(CASE WHEN outcome_label = 1 THEN 1 ELSE 0 END) as wins
                 FROM signals WHERE outcome IS NOT NULL AND grade IS NOT NULL GROUP BY grade
             """)
             return {
@@ -605,7 +613,7 @@ class SignalLogger:
         try:
             rows = self._query("""
                 SELECT direction, COUNT(*) as total,
-                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN','PARTIAL_WIN','PARTIAL_WIN_FINAL','ESTIMATED_PARTIAL_WIN','ESTIMATED_PARTIAL_WIN_FINAL') THEN 1 ELSE 0 END) as wins,
+                       SUM(CASE WHEN outcome_label = 1 THEN 1 ELSE 0 END) as wins,
                        SUM(COALESCE(pnl_points, 0)) as total_pnl
                 FROM signals WHERE outcome IS NOT NULL AND direction IS NOT NULL GROUP BY direction
             """)
@@ -626,7 +634,7 @@ class SignalLogger:
         try:
             rows = self._query("""
                 SELECT tp_source, COUNT(*) as total,
-                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN','PARTIAL_WIN','PARTIAL_WIN_FINAL','ESTIMATED_PARTIAL_WIN','ESTIMATED_PARTIAL_WIN_FINAL') THEN 1 ELSE 0 END) as wins
+                       SUM(CASE WHEN outcome_label = 1 THEN 1 ELSE 0 END) as wins
                 FROM signals WHERE outcome IS NOT NULL AND tp_source IS NOT NULL GROUP BY tp_source
                 ORDER BY total DESC
             """)
@@ -647,7 +655,7 @@ class SignalLogger:
             row = self._query("""
                 SELECT COUNT(*) as total,
                        SUM(CASE WHEN outcome IS NOT NULL THEN 1 ELSE 0 END) as resolved,
-                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN','PARTIAL_WIN','PARTIAL_WIN_FINAL','ESTIMATED_PARTIAL_WIN','ESTIMATED_PARTIAL_WIN_FINAL') THEN 1 ELSE 0 END) as wins,
+                       SUM(CASE WHEN outcome_label = 1 THEN 1 ELSE 0 END) as wins,
                        SUM(COALESCE(pnl_points, 0)) as total_pnl
                 FROM signals WHERE timestamp >= ?
             """, (since_iso,), fetchall=False)
@@ -667,7 +675,7 @@ class SignalLogger:
         try:
             row = self._query("""
                 SELECT COUNT(*) as total,
-                       SUM(CASE WHEN outcome IN ('WIN','ESTIMATED_WIN','PARTIAL_WIN','PARTIAL_WIN_FINAL','ESTIMATED_PARTIAL_WIN','ESTIMATED_PARTIAL_WIN_FINAL') THEN 1 ELSE 0 END) as wins
+                       SUM(CASE WHEN outcome_label = 1 THEN 1 ELSE 0 END) as wins
                 FROM signals WHERE outcome IS NOT NULL AND timestamp >= ?
             """, (since_iso,), fetchall=False)
             if not row or not row["total"]:
@@ -688,6 +696,17 @@ class SignalLogger:
             return [dict(r) for r in rows]
         except Exception as exc:
             logger.error("get_all_null_outcome_signals failed: %s", exc, exc_info=True)
+            return []
+
+    def get_partial_win_signals(self) -> List[Dict[str, Any]]:
+        """Return signals stuck in PARTIAL_WIN that need Phase 2 resolution."""
+        try:
+            rows = self._query(
+                "SELECT * FROM signals WHERE outcome = 'PARTIAL_WIN' AND tp1_hit = 1 ORDER BY timestamp ASC"
+            )
+            return [dict(r) for r in rows]
+        except Exception as exc:
+            logger.error("get_partial_win_signals failed: %s", exc, exc_info=True)
             return []
 
     def fix_partial_saves(self) -> int:
@@ -800,7 +819,7 @@ class SignalLogger:
                 w = self._query("""
                     SELECT COUNT(*) as cnt FROM pattern_alerts pa
                     JOIN signals s ON pa.matched_signal_id = s.id
-                    WHERE s.outcome IN ('WIN', 'ESTIMATED_WIN', 'PARTIAL_WIN', 'PARTIAL_WIN_FINAL', 'ESTIMATED_PARTIAL_WIN', 'ESTIMATED_PARTIAL_WIN_FINAL')
+                    WHERE s.outcome_label = 1
                 """, fetchall=False)
                 wins = w["cnt"] if w else 0
             match_rate = round(matched / total * 100, 1) if total > 0 else 0.0

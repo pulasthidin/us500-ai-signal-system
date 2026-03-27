@@ -3,7 +3,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Code Quality](https://github.com/pulasthidin/us500-ai-signal-system/actions/workflows/quality.yml/badge.svg)](https://github.com/pulasthidin/us500-ai-signal-system/actions)
-[![Tests](https://img.shields.io/badge/tests-443%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-501%20passing-brightgreen.svg)]()
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6.svg)]()
 
 A fully automated intraday trading signal system for US500 (S&P 500) built on ICT/SMC confluence analysis, market regime detection, liquidity sweep confirmation, and self-evolving ML models. Telegram-only alerts with TP1/TP2 partial profit targets.
@@ -156,7 +156,7 @@ The system automatically evolves through 4 stages as it collects trading data:
 |-------|------|--------|---------|
 | **Model 1** | XGBoost | Good trade day? | Day quality filter |
 | **Model 2** | LightGBM | Direction up/down | Session bias prediction |
-| **Model 3** | XGBoost | WIN/PARTIAL_WIN/LOSS | Signal win probability |
+| **Model 3** | XGBoost | Direction correct? (binary) | Signal win probability |
 
 ### 64 ML Training Features
 
@@ -253,7 +253,7 @@ us500-ai-signal-system/
 │   ├── evolution_manager.py     # 4-stage auto-evolution
 │   └── pattern_scanner.py       # Early warning pattern matching
 │
-├── tests/                       # 443 unit tests (18 test files)
+├── tests/                       # 501 unit tests (19 test files)
 ├── notebooks/
 │   └── 01_data_fetcher.ipynb    # Data download + feature engineering
 │

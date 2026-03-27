@@ -258,8 +258,7 @@ class ModelTrainer:
                 return
 
             feature_cols = [c for c in self._get_feature_cols_m2() if c in df.columns]
-            y_raw = df["sp500_direction"].values
-            y = np.where(y_raw == 1, 1, 0)
+            y = (df["sp500_return"] >= 0).astype(int).values
             X = df[feature_cols].shift(1)
             valid = X.notna().all(axis=1)
             X = X.loc[valid]
@@ -376,9 +375,9 @@ class ModelTrainer:
             for col, mapping in self.CHECKLIST_FEATURE_MAP.items():
                 enc_col = f"{col}_enc"
                 if col in df.columns:
-                    df[enc_col] = df[col].map(mapping).fillna(0).astype(float)
+                    df[enc_col] = df[col].map(mapping).astype(float)
                 else:
-                    df[enc_col] = 0.0
+                    df[enc_col] = float("nan")
 
             bool_cols = [
                 "above_ema200", "above_ema50", "choch_recent", "at_zone",
@@ -443,16 +442,9 @@ class ModelTrainer:
                 logger.warning("Feature prep returned empty")
                 return False
 
-            # PARTIAL_WIN (label=0, outcome='PARTIAL_WIN') = direction correct = treat as win
-            # LOSS (label=-1) = direction wrong = 0
-            # WIN (label=1) = full target hit = 1
-            y_raw = data["outcome_label"].values
-            outcomes = data["outcome"].values
-            label_map = {-1: 0, 1: 1}
-            y = np.array([
-                1 if "PARTIAL_WIN" in str(outcomes[i]) else label_map.get(int(v), 0)
-                for i, v in enumerate(y_raw)
-            ])
+            # outcome_label: 1 = direction correct (WIN/PARTIAL_WIN*), -1 = LOSS, 0 = TIMEOUT
+            # Binary for XGBoost: label=1 -> y=1, anything else -> y=0
+            y = (data["outcome_label"].values == 1).astype(int)
             X = X_df
             feature_cols = list(X_df.columns)
 

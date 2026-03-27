@@ -151,7 +151,7 @@ class ModelPredictor:
 
             for col in feature_cols:
                 if col not in X_df.columns:
-                    X_df[col] = 0.0
+                    X_df[col] = float("nan")
             X_df = X_df[feature_cols]
 
             proba = model.predict_proba(X_df)[0]
@@ -191,7 +191,7 @@ class ModelPredictor:
 
             for col in feature_cols:
                 if col not in X_df.columns:
-                    X_df[col] = 0.0
+                    X_df[col] = float("nan")
             X_df = X_df[feature_cols]
 
             shap_values = self._shap_explainer.shap_values(X_df.values)

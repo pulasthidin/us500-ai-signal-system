@@ -51,21 +51,30 @@ class OutcomeTracker:
 
     def run_startup_catchup(self) -> Dict[str, int]:
         """
-        Called once on app startup.  Finds ALL signals with outcome IS NULL
-        (no time limit), resolves any that are old enough (>= 2 hrs),
-        and returns a summary dict {checked, wins, losses, timeouts, skipped}.
+        Called once on app startup.  Resolves:
+        1. ALL signals with outcome IS NULL (Phase 1 — TP1/TP2/SL check)
+        2. ALL signals stuck in PARTIAL_WIN (Phase 2 — TP2 vs breakeven)
+        Returns a summary dict {checked, wins, losses, timeouts, skipped, upgraded}.
         """
-        summary = {"checked": 0, "wins": 0, "losses": 0, "timeouts": 0, "skipped": 0, "estimated": 0}
+        summary = {
+            "checked": 0, "wins": 0, "losses": 0, "timeouts": 0,
+            "skipped": 0, "estimated": 0, "upgraded": 0,
+        }
         try:
             self._resume_interrupted_checkpoint()
 
             all_null = self._signal_logger.get_all_null_outcome_signals()
-            if not all_null:
+            partial_wins = self._signal_logger.get_partial_win_signals()
+
+            if not all_null and not partial_wins:
                 logger.info("Catch-up: no missed signals")
                 return summary
 
             now = datetime.now(timezone.utc)
-            logger.info("Catch-up: found %d signals with NULL outcome", len(all_null))
+            logger.info(
+                "Catch-up: found %d NULL-outcome + %d PARTIAL_WIN signals",
+                len(all_null), len(partial_wins),
+            )
 
             for signal in all_null:
                 try:
@@ -98,6 +107,28 @@ class OutcomeTracker:
 
                 except Exception as exc:
                     logger.error("Catch-up failed for signal %s: %s", signal.get("id"), exc, exc_info=True)
+                    self._clear_checkpoint()
+
+            for signal in partial_wins:
+                try:
+                    self._save_checkpoint(signal["id"])
+                    result = self._resolve_signal_with_fallback(signal)
+                    self._clear_checkpoint()
+
+                    if result is None:
+                        summary["skipped"] += 1
+                        continue
+
+                    summary["checked"] += 1
+                    if result.get("upgraded_from_partial"):
+                        summary["upgraded"] += 1
+                        summary["wins"] += 1
+                        logger.info("Catch-up: signal %s upgraded PARTIAL_WIN -> WIN", signal.get("id"))
+                    elif result["outcome"] == "PARTIAL_WIN_FINAL":
+                        logger.info("Catch-up: signal %s finalized as PARTIAL_WIN_FINAL", signal.get("id"))
+
+                except Exception as exc:
+                    logger.error("Catch-up Phase 2 failed for signal %s: %s", signal.get("id"), exc, exc_info=True)
                     self._clear_checkpoint()
 
             logger.info("Catch-up complete: %s", summary)
@@ -162,7 +193,7 @@ class OutcomeTracker:
                     )
                 elif result["outcome"] == "PARTIAL_WIN_FINAL":
                     self._signal_logger.update_outcome(
-                        signal_id=sid, outcome="PARTIAL_WIN_FINAL", label=0,
+                        signal_id=sid, outcome="PARTIAL_WIN_FINAL", label=1,
                         bars=result["bars_to_outcome"], pnl=result["pnl_points"],
                         timestamp=result["outcome_timestamp"],
                     )
@@ -181,6 +212,12 @@ class OutcomeTracker:
         if h1_df is not None and not h1_df.empty:
             result = self.triple_barrier_check(signal, h1_df, min_bars_for_timeout=OUTCOME_MIN_H1_BARS_FOR_TIMEOUT)
             if result is not None:
+                if result.get("tp1_hit") and result["outcome"] == "PARTIAL_WIN":
+                    self._signal_logger.update_tp1_hit(
+                        sid, result["outcome_timestamp"],
+                    )
+                    logger.info("Signal %s: H1 fallback found TP1 hit — PARTIAL_WIN (Phase 2 will follow)", sid)
+                    return result
                 result["outcome"] = f"ESTIMATED_{result['outcome']}"
                 result["estimated"] = True
                 self._signal_logger.update_outcome(
@@ -324,7 +361,7 @@ class OutcomeTracker:
                 ts = str(bar.get(ts_col, "")) if ts_col else datetime.now(timezone.utc).isoformat()
                 pnl = self._calc_tp1_pnl(signal)
                 return {
-                    "outcome": "PARTIAL_WIN", "label": 0,
+                    "outcome": "PARTIAL_WIN", "label": 1,
                     "bars_to_outcome": bar_num, "pnl_points": pnl,
                     "outcome_timestamp": ts, "tp1_hit": True,
                 }
@@ -375,6 +412,15 @@ class OutcomeTracker:
             else:
                 continue
 
+            if tp2_hit and be_hit:
+                pnl = self._calc_tp1_pnl(signal)
+                ts = str(bar.get(ts_col, "")) if ts_col else datetime.now(timezone.utc).isoformat()
+                logger.info("Signal %s: TP2+BE same bar after PARTIAL_WIN -> conservative BE (finalized)", signal.get("id"))
+                return {
+                    "outcome": "PARTIAL_WIN_FINAL", "label": 1,
+                    "bars_to_outcome": bar_num, "pnl_points": pnl,
+                    "outcome_timestamp": ts,
+                }
             if tp2_hit:
                 pnl = self._calc_full_pnl_after_tp1(signal)
                 ts = str(bar.get(ts_col, "")) if ts_col else datetime.now(timezone.utc).isoformat()
@@ -389,7 +435,7 @@ class OutcomeTracker:
                 ts = str(bar.get(ts_col, "")) if ts_col else datetime.now(timezone.utc).isoformat()
                 logger.info("Signal %s: breakeven hit after PARTIAL_WIN -> finalized", signal.get("id"))
                 return {
-                    "outcome": "PARTIAL_WIN_FINAL", "label": 0,
+                    "outcome": "PARTIAL_WIN_FINAL", "label": 1,
                     "bars_to_outcome": bar_num, "pnl_points": pnl,
                     "outcome_timestamp": ts,
                 }
@@ -399,7 +445,7 @@ class OutcomeTracker:
 
         pnl = self._calc_tp1_pnl(signal)
         return {
-            "outcome": "PARTIAL_WIN_FINAL", "label": 0,
+            "outcome": "PARTIAL_WIN_FINAL", "label": 1,
             "bars_to_outcome": len(phase2_bars), "pnl_points": pnl,
             "outcome_timestamp": datetime.now(timezone.utc).isoformat(),
         }
