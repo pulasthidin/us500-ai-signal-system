@@ -3,8 +3,39 @@
 import pytest
 import numpy as np
 import pandas as pd
+from unittest.mock import MagicMock
 from src.entry_checker import EntryChecker
 from config import MIN_RR, SL_ATR_MULTIPLIER, SL_MIN_ATR_MULTIPLIER, TP_ATR_MULTIPLIER
+
+
+def _make_bullish_fvg_df():
+    """10-bar DataFrame with a clear bullish body-based FVG at bar 7.
+
+    Bar 6 body top (6495) < Bar 8 body bottom (6518) creates the gap.
+    Bar 7 is a strong bullish impulse candle (body ratio ~0.85).
+    """
+    return pd.DataFrame({
+        "open":   [6500, 6502, 6498, 6501, 6503, 6490, 6490, 6498, 6518, 6520],
+        "high":   [6505, 6505, 6503, 6505, 6505, 6498, 6498, 6522, 6525, 6528],
+        "low":    [6498, 6496, 6496, 6499, 6495, 6488, 6488, 6496, 6515, 6518],
+        "close":  [6502, 6498, 6501, 6503, 6497, 6495, 6495, 6520, 6522, 6525],
+        "volume": [10000] * 10,
+    })
+
+
+def _make_bearish_fvg_df():
+    """10-bar DataFrame with a clear bearish body-based FVG at bar 7.
+
+    Bar 6 body bottom (6515) > Bar 8 body top (6492) creates the gap.
+    Bar 7 is a strong bearish impulse candle (body ratio ~0.85).
+    """
+    return pd.DataFrame({
+        "open":   [6500, 6502, 6498, 6501, 6503, 6510, 6520, 6512, 6492, 6490],
+        "high":   [6505, 6505, 6503, 6505, 6507, 6515, 6525, 6514, 6495, 6492],
+        "low":    [6498, 6496, 6496, 6499, 6501, 6505, 6512, 6488, 6485, 6483],
+        "close":  [6502, 6498, 6501, 6503, 6505, 6510, 6515, 6490, 6488, 6485],
+        "volume": [10000] * 10,
+    })
 
 
 @pytest.fixture
@@ -507,3 +538,122 @@ class TestRegressionWinningTrades:
             open_price=6590.0, close_price=6588.0,
             high=6591.0, low=6587.0, atr=15.0,
         ) is False, "Tiny 4-point candle below ATR threshold must be rejected"
+
+
+# ─── M5 FVG detection ────────────────────────────────────
+
+class TestDetectM5FVG:
+    def test_bullish_fvg_detected(self, entry):
+        df = _make_bullish_fvg_df()
+        result = entry.detect_m5_fvg(df, "LONG", atr=0.0)
+        assert result["present"] is True
+        assert result["direction"] == "bullish"
+
+    def test_bearish_fvg_detected(self, entry):
+        df = _make_bearish_fvg_df()
+        result = entry.detect_m5_fvg(df, "SHORT", atr=0.0)
+        assert result["present"] is True
+        assert result["direction"] == "bearish"
+
+    def test_no_fvg_overlapping_candles(self, entry):
+        n = 20
+        df = pd.DataFrame({
+            "open": [6500.0] * n, "high": [6502.0] * n,
+            "low": [6498.0] * n, "close": [6500.0] * n,
+            "volume": [10000] * n,
+        })
+        result = entry.detect_m5_fvg(df, "LONG", atr=0.0)
+        assert result["present"] is False
+
+    def test_fvg_details_include_top_bottom(self, entry):
+        df = _make_bullish_fvg_df()
+        result = entry.detect_m5_fvg(df, "LONG", atr=0.0)
+        assert result["present"] is True
+        assert result["top"] is not None
+        assert result["bottom"] is not None
+        assert isinstance(result["age_bars"], int)
+        assert result["age_bars"] >= 0
+        assert result["top"] > result["bottom"]
+
+
+# ─── M5 BOS detection ────────────────────────────────────
+
+class TestDetectM5BOS:
+    def test_bos_confirmed(self, entry):
+        from smartmoneyconcepts import smc
+
+        n = 50
+        bos_df = pd.DataFrame({"BOS": [np.nan] * 48 + ["bullish", np.nan]})
+        smc.swing_highs_lows = MagicMock(return_value=pd.DataFrame())
+        smc.bos_choch = MagicMock(return_value=bos_df)
+
+        df = pd.DataFrame({
+            "open": [6500.0] * n, "high": [6510.0] * n,
+            "low": [6490.0] * n, "close": [6500.0] * n,
+        })
+        assert entry.detect_m5_bos(df, "LONG") is True
+
+    def test_no_bos(self, entry):
+        from smartmoneyconcepts import smc
+
+        n = 50
+        bos_df = pd.DataFrame({"BOS": [np.nan] * n})
+        smc.swing_highs_lows = MagicMock(return_value=pd.DataFrame())
+        smc.bos_choch = MagicMock(return_value=bos_df)
+
+        df = pd.DataFrame({
+            "open": [6500.0] * n, "high": [6510.0] * n,
+            "low": [6490.0] * n, "close": [6500.0] * n,
+        })
+        assert entry.detect_m5_bos(df, "LONG") is False
+
+
+# ─── FVG size and age ────────────────────────────────────
+
+class TestFVGSizeAndAge:
+    def test_fvg_size_points_calculated(self, entry):
+        df = _make_bullish_fvg_df()
+        result = entry.detect_m5_fvg(df, "LONG", atr=0.0)
+        assert result["present"] is True
+        fvg_size = abs(result["top"] - result["bottom"])
+        assert fvg_size > 0
+
+    def test_fvg_age_bars_from_detection(self, entry):
+        df = _make_bullish_fvg_df()
+        result = entry.detect_m5_fvg(df, "LONG", atr=0.0)
+        assert result["present"] is True
+        assert isinstance(result["age_bars"], int)
+        assert result["age_bars"] >= 0
+        assert result["age_bars"] < len(df)
+
+
+# ─── Entry result integration ────────────────────────────
+
+class TestEntryResultIntegration:
+    def test_entry_ready_with_fvg_and_bos(self, entry):
+        from smartmoneyconcepts import smc
+
+        fvg_df = _make_bullish_fvg_df()
+        entry._ctrader.fetch_bars = MagicMock(return_value=fvg_df.copy())
+
+        bos_df = pd.DataFrame({"BOS": [np.nan] * 8 + ["bullish", np.nan]})
+        smc.swing_highs_lows = MagicMock(return_value=pd.DataFrame())
+        smc.bos_choch = MagicMock(return_value=bos_df)
+
+        result = entry.get_entry_result("LONG", 6500.0)
+        assert result["fvg_present"] is True
+        if result["rr_valid"]:
+            assert result["entry_ready"] is True
+
+    def test_entry_not_ready_without_fvg(self, entry):
+        n = 50
+        flat_df = pd.DataFrame({
+            "open": [6500.0] * n, "high": [6502.0] * n,
+            "low": [6498.0] * n, "close": [6500.0] * n,
+            "volume": [10000] * n,
+        })
+        entry._ctrader.fetch_bars = MagicMock(return_value=flat_df.copy())
+
+        result = entry.get_entry_result("LONG", 6500.0)
+        assert result["fvg_present"] is False
+        assert result["entry_ready"] is False

@@ -89,10 +89,10 @@ class TestChecklistDecisionBranches:
                            sweep=False, is_ranging=False):
         engine._structure.get_layer2_result.return_value = {
             "structure_bias": struct_bias, "score_contribution": 1,
-            "above_ema200": True, "above_ema50": True, "ema_bias": "bullish",
+            "above_ema50": True, "ema_bias": "bullish",
             "bos_direction": "bullish", "bos_level": 6500, "bos_bars_ago": 2,
             "choch_direction": None, "choch_recent": False, "wyckoff": "markup",
-            "ema200_value": 6400, "ema50_value": 6450,
+            "ema50_value": 6450,
             "ob_bullish_nearby": False, "ob_bearish_nearby": False,
             "bullish_obs": [], "bearish_obs": [],
             "range_condition": {"is_ranging": is_ranging, "range_strength": "none"},

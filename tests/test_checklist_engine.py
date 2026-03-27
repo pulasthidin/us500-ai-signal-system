@@ -62,10 +62,10 @@ class TestScoring:
         engine._macro.get_layer1_result.return_value = sample_macro_data
         engine._structure.get_layer2_result.return_value = {
             "structure_bias": "long", "score_contribution": 1,
-            "above_ema200": True, "above_ema50": True, "ema_bias": "bullish",
+            "above_ema50": True, "ema_bias": "bullish",
             "bos_direction": "bullish", "bos_level": 6500, "bos_bars_ago": 2,
             "choch_direction": None, "choch_recent": False, "wyckoff": "markup",
-            "ema200_value": 6400, "ema50_value": 6450,
+            "ema50_value": 6450,
         }
         engine._zones.get_layer3_result.return_value = {
             "at_zone": True, "zone_level": 6500, "zone_type": "round",
@@ -95,10 +95,10 @@ class TestScoring:
         sample_macro_data["bias"] = "MIXED"
         engine._structure.get_layer2_result.return_value = {
             "structure_bias": "unclear", "score_contribution": 0,
-            "above_ema200": None, "above_ema50": None, "ema_bias": "unclear",
+            "above_ema50": None, "ema_bias": "unclear",
             "bos_direction": None, "bos_level": None, "bos_bars_ago": 0,
             "choch_direction": None, "choch_recent": False, "wyckoff": "unclear",
-            "ema200_value": None, "ema50_value": None,
+            "ema50_value": None,
         }
         engine._zones.get_layer3_result.return_value = {
             "at_zone": False, "zone_level": None, "zone_type": None,
@@ -357,10 +357,10 @@ class TestChecklistRangeSweepIntegration:
         }
         engine._structure.get_layer2_result.return_value = {
             "structure_bias": "long", "score_contribution": 1,
-            "above_ema200": True, "above_ema50": True, "ema_bias": "bullish",
+            "above_ema50": True, "ema_bias": "bullish",
             "bos_direction": "bullish", "bos_level": 6500, "bos_bars_ago": 2,
             "choch_direction": None, "choch_recent": False, "wyckoff": "markup",
-            "ema200_value": 6400, "ema50_value": 6450,
+            "ema50_value": 6450,
             "ob_bullish_nearby": False, "ob_bearish_nearby": False,
             "bullish_obs": [], "bearish_obs": [],
             "range_condition": range_cond,
@@ -448,10 +448,10 @@ class TestRegressionWinningTradesChecklist:
 
         engine._structure.get_layer2_result.return_value = {
             "structure_bias": "short", "score_contribution": 1,
-            "above_ema200": True, "above_ema50": False, "ema_bias": "bearish",
+            "above_ema50": False, "ema_bias": "bearish",
             "bos_direction": "bearish", "bos_level": 6580, "bos_bars_ago": 3,
             "choch_direction": "bearish", "choch_recent": True, "wyckoff": "markdown",
-            "ema200_value": 6400, "ema50_value": 6610,
+            "ema50_value": 6610,
             "ob_bullish_nearby": False, "ob_bearish_nearby": True,
             "bullish_obs": [], "bearish_obs": [{"top": 6610, "bottom": 6600, "type": "bearish"}],
             "range_condition": range_cond,
@@ -530,10 +530,10 @@ class TestRegressionWinningTradesChecklist:
 
         engine._structure.get_layer2_result.return_value = {
             "structure_bias": "short", "score_contribution": 1,
-            "above_ema200": True, "above_ema50": False, "ema_bias": "bearish",
+            "above_ema50": False, "ema_bias": "bearish",
             "bos_direction": "bearish", "bos_level": 6510, "bos_bars_ago": 2,
             "choch_direction": None, "choch_recent": False, "wyckoff": "markdown",
-            "ema200_value": 6350, "ema50_value": 6530,
+            "ema50_value": 6530,
             "ob_bullish_nearby": False, "ob_bearish_nearby": True,
             "bullish_obs": [], "bearish_obs": [],
             "range_condition": range_cond,
@@ -603,10 +603,10 @@ class TestRegressionWinningTradesChecklist:
 
         engine._structure.get_layer2_result.return_value = {
             "structure_bias": "long", "score_contribution": 1,
-            "above_ema200": True, "above_ema50": True, "ema_bias": "bullish",
+            "above_ema50": True, "ema_bias": "bullish",
             "bos_direction": "bullish", "bos_level": 6500, "bos_bars_ago": 2,
             "choch_direction": None, "choch_recent": False, "wyckoff": "markup",
-            "ema200_value": 6350, "ema50_value": 6480,
+            "ema50_value": 6480,
             "ob_bullish_nearby": True, "ob_bearish_nearby": False,
             "bullish_obs": [], "bearish_obs": [],
             "range_condition": range_cond,

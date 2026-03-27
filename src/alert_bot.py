@@ -111,7 +111,7 @@ class AlertBot:
                 f"Size:   {result.get('size_label', '').upper()} (VIX {vix_bucket})",
                 "\u2501" * 20,
                 f"L1: {layer1.get('bias', '?')} bias | VIX {vix_pct:+.1f}% {'falling' if vix_pct < 0 else 'rising'}",
-                f"L2: {'Above' if layer2.get('above_ema200') else 'Below'} EMA200 | BOS {layer2.get('bos_direction', '?')}"
+                f"L2: {'Above' if layer2.get('above_ema50') else 'Below'} EMA50 | BOS {layer2.get('bos_direction', '?')}"
                 f"{' | OB nearby' if layer2.get('ob_bullish_nearby') or layer2.get('ob_bearish_nearby') else ''}",
                 f"L3: {'At' if layer3.get('at_zone') else 'No'} {layer3.get('zone_type', 'zone')} {layer3.get('zone_level', '')}"
                 f" | {(layer3.get('distance') or 0):.1f}pts away",

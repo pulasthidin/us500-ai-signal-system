@@ -364,7 +364,7 @@ class SignalLogger:
                             layer1.get("bullish_count"),
                             layer1.get("bearish_count"),
 
-                            self._bool_to_int(layer2.get("above_ema200")),
+                            None,  # above_ema200: removed (cTrader bar limit)
                             self._bool_to_int(layer2.get("above_ema50")),
                             layer2.get("bos_direction"),
                             layer2.get("wyckoff"),

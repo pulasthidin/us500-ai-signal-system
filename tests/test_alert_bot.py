@@ -31,7 +31,7 @@ def _full_send_result():
         "day_name": "Tuesday",
         "caution_flags": [],
         "layer1": {"bias": "LONG", "vix_pct": -3.2, "vix_value": 17.0, "vix_bucket": "normal"},
-        "layer2": {"above_ema200": True, "bos_direction": "bullish"},
+        "layer2": {"bos_direction": "bullish"},
         "layer3": {"at_zone": True, "zone_type": "pdl", "zone_level": 6544.0, "distance": 1.5},
         "layer4": {"delta_direction": "buyers", "divergence": "none"},
         "entry": {
@@ -204,3 +204,138 @@ class TestWeeklyReportEvolution:
         }
         msg = bot.format_weekly_report(stats)
         assert "PATTERN SCANNER:" not in msg
+
+
+# ══════════════════════════════════════════════════════════════
+# NEW TEST CLASSES — send behaviour, dedup, error handling
+# ══════════════════════════════════════════════════════════════
+
+class TestSystemAlertDedup:
+    """send_system_alert deduplicates identical alerts within the time window."""
+
+    @pytest.fixture
+    def bot_with_system(self):
+        with patch("src.alert_bot.telegram"):
+            b = AlertBot()
+            b._system_bot = MagicMock()
+            b._system_chat_id = "123"
+            b._run_async = MagicMock()
+            return b
+
+    def test_same_message_suppressed_within_window(self, bot_with_system):
+        bot_with_system.send_system_alert("WARNING", "yfinance", "All retries failed")
+        bot_with_system.send_system_alert("WARNING", "yfinance", "All retries failed")
+        assert bot_with_system._run_async.call_count == 1
+
+    def test_different_messages_both_sent(self, bot_with_system):
+        bot_with_system.send_system_alert("WARNING", "yfinance", "All retries failed")
+        bot_with_system.send_system_alert("WARNING", "ctrader", "Connection lost")
+        assert bot_with_system._run_async.call_count == 2
+
+    def test_same_message_sent_after_window_expires(self, bot_with_system):
+        bot_with_system.send_system_alert("WARNING", "yfinance", "All retries failed")
+        assert bot_with_system._run_async.call_count == 1
+
+        for key in bot_with_system._system_alert_cache:
+            bot_with_system._system_alert_cache[key] -= 11 * 60
+
+        bot_with_system.send_system_alert("WARNING", "yfinance", "All retries failed")
+        assert bot_with_system._run_async.call_count == 2
+
+
+class TestSendTradeAlert:
+    """send_trade_alert formats and dispatches to the trade channel."""
+
+    @pytest.fixture
+    def bot_with_trade(self):
+        with patch("src.alert_bot.telegram"):
+            b = AlertBot()
+            b._trade_bot = MagicMock()
+            b._trade_chat_id = "456"
+            b._run_async = MagicMock()
+            return b
+
+    def test_sends_with_ml_data(self, bot_with_trade):
+        ml = {"win_probability": 0.74, "shap_top_features": ["VIX falling"]}
+        bot_with_trade.send_trade_alert(_full_send_result(), ml)
+        bot_with_trade._run_async.assert_called_once()
+
+    def test_sends_without_ml_data(self, bot_with_trade):
+        ml = {"win_probability": None, "shap_top_features": None}
+        bot_with_trade.send_trade_alert(_full_send_result(), ml)
+        bot_with_trade._run_async.assert_called_once()
+
+
+class TestSendWeeklyReport:
+    """send_weekly_report formats stats then dispatches to the system channel."""
+
+    def test_calls_format_and_sends(self):
+        with patch("src.alert_bot.telegram"):
+            b = AlertBot()
+            b._system_bot = MagicMock()
+            b._system_chat_id = "789"
+            b._run_async = MagicMock()
+
+            stats = {"win_rate": 55.0, "by_session": {}, "by_grade": {}}
+            with patch.object(b, "format_weekly_report", wraps=b.format_weekly_report) as spy:
+                b.send_weekly_report(stats)
+                spy.assert_called_once_with(stats)
+            b._run_async.assert_called_once()
+
+
+class TestFormatWeeklyReportSections:
+    """format_weekly_report includes the right sections when data is present."""
+
+    @pytest.fixture
+    def bot(self):
+        with patch("src.alert_bot.telegram"):
+            return AlertBot()
+
+    def test_includes_by_direction_section(self, bot):
+        stats = {
+            "win_rate": 60.0, "by_session": {}, "by_grade": {},
+            "by_direction": {
+                "LONG":  {"win_rate": 65.0, "wins": 13, "total": 20, "total_pnl": 42.5},
+                "SHORT": {"win_rate": 55.0, "wins": 11, "total": 20, "total_pnl": -5.0},
+            },
+        }
+        msg = bot.format_weekly_report(stats)
+        assert "LONG vs SHORT:" in msg
+        assert "LONG:" in msg
+        assert "SHORT:" in msg
+
+    def test_includes_shap_features(self, bot):
+        stats = {
+            "win_rate": 60.0, "by_session": {}, "by_grade": {},
+            "shap_report": ["vix_pct", "delta_direction", "session_london"],
+        }
+        msg = bot.format_weekly_report(stats)
+        assert "TOP ML FEATURES:" in msg
+        assert "vix_pct" in msg
+
+    def test_includes_pattern_accuracy(self, bot):
+        stats = {
+            "win_rate": 60.0, "by_session": {}, "by_grade": {},
+            "pattern_accuracy": {"total_alerts": 30, "match_rate": 50.0, "win_rate_after_match": 70.0},
+        }
+        msg = bot.format_weekly_report(stats)
+        assert "PATTERN SCANNER:" in msg
+        assert "30" in msg
+
+    def test_handles_empty_stats_gracefully(self, bot):
+        msg = bot.format_weekly_report({})
+        assert isinstance(msg, str)
+        assert len(msg) > 0
+
+
+class TestSendErrorHandling:
+    """Telegram errors inside senders are caught — no propagation."""
+
+    def test_telegram_error_caught(self):
+        with patch("src.alert_bot.telegram"):
+            b = AlertBot()
+            b._trade_bot = MagicMock()
+            b._trade_chat_id = "456"
+            b._run_async = MagicMock(side_effect=Exception("Network down"))
+
+            b.send_trade_alert(_full_send_result())  # must not raise

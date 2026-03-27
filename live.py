@@ -286,19 +286,14 @@ def _run_test_pandas_ta() -> StartupTest:
     t = StartupTest("pandas-ta", critical=True)
     try:
         import pandas_ta as ta
-        bars = ctrader.fetch_bars(us500_id, "H4", 200)
+        bars = ctrader.fetch_bars(us500_id, "H4", 100)
         if bars is None or bars.empty:
             raise ConnectionError("No H4 bars for EMA test")
         ema50 = ta.ema(bars["close"], length=50)
         if ema50 is None or ema50.dropna().empty:
             raise ValueError(f"EMA50 returned None ({len(bars)} bars, need 50+)")
         val50 = float(ema50.dropna().iloc[-1])
-        ema200 = ta.ema(bars["close"], length=200)
-        if ema200 is not None and not ema200.dropna().empty:
-            val200 = float(ema200.dropna().iloc[-1])
-            t.detail = f"EMA50:{val50:.0f} EMA200:{val200:.0f} ({len(bars)} bars)"
-        else:
-            t.detail = f"EMA50:{val50:.0f} EMA200:pending ({len(bars)} bars, need 200)"
+        t.detail = f"EMA50:{val50:.0f} ({len(bars)} bars)"
         t.passed = True
     except Exception as exc:
         t.error = str(exc)
@@ -684,10 +679,16 @@ def send_morning_brief() -> None:
 
 
 def weekly_report_and_retrain() -> None:
+    evo_result = {}
     try:
         model_trainer.check_and_retrain()
         model_predictor.load_all_models()
         evo_result = evolution_manager.run_evolution_check()
+    except Exception as exc:
+        logger.error("Weekly retrain failed: %s", exc, exc_info=True)
+        alert_bot.send_system_alert("WARNING", "weekly_retrain", str(exc))
+
+    try:
         now = datetime.now(timezone.utc)
         this_week_iso  = (now - timedelta(days=7)).isoformat()
         last_week_iso  = (now - timedelta(days=14)).isoformat()
@@ -714,6 +715,9 @@ def weekly_report_and_retrain() -> None:
 
 def daily_retrain_midnight() -> None:
     try:
+        if datetime.now(timezone.utc).strftime("%A").lower() == MODEL_RETRAIN_DAY.lower():
+            logger.info("Daily retrain skipped — weekly retrain already covers %s", MODEL_RETRAIN_DAY)
+            return
         stage_info = evolution_manager.get_stage_info()
         if not stage_info.get("daily_training_active"):
             return

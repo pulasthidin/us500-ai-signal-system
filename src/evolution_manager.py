@@ -93,11 +93,19 @@ class EvolutionManager:
                 self._activate_stage_1(state, count)
                 state = self._load_stage()
                 current_stage = state.get("stage", 0)
+                if current_stage < 1:
+                    logger.warning("Stage 1 activation failed — not advancing further")
+                    state["signal_count"] = count
+                    return state
 
             if count >= STAGE_THRESHOLDS[2] and current_stage < 2:
                 self._activate_stage_2(state, count)
                 state = self._load_stage()
                 current_stage = state.get("stage", 0)
+                if current_stage < 2:
+                    logger.warning("Stage 2 activation failed — not advancing further")
+                    state["signal_count"] = count
+                    return state
 
             if count >= STAGE_THRESHOLDS[3] and current_stage < 3:
                 self._activate_stage_3(state, count)

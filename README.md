@@ -49,7 +49,7 @@ Each signal must pass through 4 independent layers before firing. Only setups sc
 | Layer | Timeframe | What It Checks | Data Source |
 |-------|-----------|----------------|-------------|
 | **L1 Macro** | Daily | VIX level/direction, US10Y, Oil, DXY, RUT | yfinance |
-| **L2 Structure** | H4 + H1 | EMA 200/50, BOS/ChoCH, Wyckoff, **range detection (ADX + ATR compression)** | cTrader + smartmoneyconcepts |
+| **L2 Structure** | H4 + H1 | EMA 50, BOS/ChoCH, Wyckoff, **range detection (ADX + ATR compression)** | cTrader + smartmoneyconcepts |
 | **L3 Zones** | H1 | PDH/PDL, round numbers, POC, EQH/EQL, **Asian session range, liquidity sweep detection** | cTrader |
 | **L4 Order Flow** | M15 | Volume delta (M1 intrabar), delta divergence, VIX spike gate | cTrader |
 | **M5 Entry** | M5 | **Displacement-validated FVG**, BOS, USTEC SMT, **sweep confirmation**, **TP1/TP2**, R:R >= 1.6 | cTrader + smartmoneyconcepts |

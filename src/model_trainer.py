@@ -332,7 +332,7 @@ class ModelTrainer:
         # --- macro / VIX ---
         "vix_level", "vix_pct", "bullish_count", "bearish_count",
         # --- H4 structure ---
-        "above_ema200", "above_ema50", "choch_recent",
+        "above_ema50", "choch_recent",
         "ob_bullish_nearby", "ob_bearish_nearby",
         # --- zones ---
         "at_zone", "zone_distance", "eqh_nearby", "eql_nearby",
@@ -380,7 +380,7 @@ class ModelTrainer:
                     df[enc_col] = float("nan")
 
             bool_cols = [
-                "above_ema200", "above_ema50", "choch_recent", "at_zone",
+                "above_ema50", "choch_recent", "at_zone",
                 "confirms_bias", "vix_spiking_now", "fvg_present", "m5_bos",
                 "ustec_agrees", "is_monday", "is_friday", "is_news_day",
                 "ob_bullish_nearby", "ob_bearish_nearby", "eqh_nearby", "eql_nearby",
@@ -416,7 +416,7 @@ class ModelTrainer:
 
     def train_meta_label_model(self) -> bool:
         """
-        XGBoost multiclass on real signal outcomes.
+        XGBoost binary classifier on real signal outcomes.
         Requires at least MODEL_RETRAIN_SIGNAL_THRESHOLD labelled signals.
         """
         try:
@@ -426,7 +426,7 @@ class ModelTrainer:
 
             data = self._signal_logger.get_training_data()
             data = data[data["outcome_label"].notna()].copy()
-            data = data[~data["outcome"].str.contains("TIMEOUT", na=True)].copy()
+            data = data[~data["outcome"].str.contains("TIMEOUT", na=False)].copy()
             count = len(data)
 
             if count < MODEL_RETRAIN_SIGNAL_THRESHOLD:
@@ -441,6 +441,10 @@ class ModelTrainer:
             if X_df.empty:
                 logger.warning("Feature prep returned empty")
                 return False
+
+            X_df, dropped = self._drop_zero_variance(X_df)
+            if dropped:
+                logger.info("Dropped %d zero-variance features: %s", len(dropped), dropped)
 
             # outcome_label: 1 = direction correct (WIN/PARTIAL_WIN*), -1 = LOSS, 0 = TIMEOUT
             # Binary for XGBoost: label=1 -> y=1, anything else -> y=0
@@ -504,6 +508,25 @@ class ModelTrainer:
             self._send_system_alert("WARNING", "model3_train", str(exc))
             return False
 
+    # ─── feature quality ────────────────────────────────────
+
+    @staticmethod
+    def _drop_zero_variance(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+        """Remove columns where all non-NaN values are identical.
+
+        These provide zero predictive power and add noise to SHAP.
+        With a small dataset (< 500 rows) this is common — columns will
+        be re-included automatically once they gain variance.
+        """
+        dropped: List[str] = []
+        for col in df.columns:
+            non_null = df[col].dropna()
+            if len(non_null) == 0 or non_null.nunique() <= 1:
+                dropped.append(col)
+        if dropped:
+            df = df.drop(columns=dropped)
+        return df, dropped
+
     # ─── SHAP report ─────────────────────────────────────────
 
     def get_shap_report(self) -> Optional[List[str]]:
@@ -527,9 +550,12 @@ class ModelTrainer:
             if self._signal_logger:
                 data = self._signal_logger.get_training_data()
                 if not data.empty:
-                    # Exclude TIMEOUT outcomes for consistent SHAP analysis
-                    data = data[~data["outcome"].str.contains("TIMEOUT", na=True)].copy()
+                    data = data[~data["outcome"].str.contains("TIMEOUT", na=False)].copy()
                     X_df = self.prepare_checklist_features(data)
+                    for col in features:
+                        if col not in X_df.columns:
+                            X_df[col] = float("nan")
+                    X_df = X_df[features]
                     X = X_df.iloc[:100]
                     shap_values = explainer.shap_values(X)
                     if isinstance(shap_values, list):

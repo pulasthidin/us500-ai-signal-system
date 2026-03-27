@@ -33,7 +33,7 @@ def _make_result(direction="LONG", price=6500.0, score=4, decision="FULL_SEND", 
             "groq_sentiment": "NEUTRAL", "bullish_count": 3, "bearish_count": 0,
         },
         "layer2": {
-            "above_ema200": True, "above_ema50": True,
+            "above_ema50": True,
             "bos_direction": "bullish", "wyckoff": "markup",
             "structure_bias": "long", "choch_recent": False,
         },

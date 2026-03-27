@@ -29,7 +29,7 @@ def sample_signal_row():
         "sl_method": "range",
         "vix_level": 17.0, "vix_pct": -2.0,
         "bullish_count": 3, "bearish_count": 0,
-        "above_ema200": 1, "above_ema50": 1, "choch_recent": 0,
+        "above_ema50": 1, "choch_recent": 0,
         "ob_bullish_nearby": 1, "ob_bearish_nearby": 0,
         "at_zone": 1, "zone_distance": 3.0,
         "eqh_nearby": 0, "eql_nearby": 1,

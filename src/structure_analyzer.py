@@ -1,6 +1,6 @@
 """
 Layer 2 — H4 Structure Analysis.
-EMA 200/50 position, BOS/ChoCH via smartmoneyconcepts, simplified Wyckoff.
+EMA 50 position, BOS/ChoCH via smartmoneyconcepts, simplified Wyckoff.
 """
 
 from __future__ import annotations
@@ -164,54 +164,41 @@ class StructureAnalyzer:
     # ─── EMAs ────────────────────────────────────────────────
 
     def calculate_emas(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add EMA 50 and EMA 200 columns to the DataFrame."""
+        """Add EMA 50 column to the DataFrame."""
         try:
             df = df.copy()
             df["ema50"] = ta.ema(df["close"], length=50)
-            df["ema200"] = ta.ema(df["close"], length=200)
             return df
         except Exception as exc:
             logger.error("calculate_emas failed: %s", exc, exc_info=True)
             clean = df.copy()
-            for col in ("ema50", "ema200"):
-                if col in clean.columns:
-                    clean.drop(columns=[col], inplace=True)
+            if "ema50" in clean.columns:
+                clean.drop(columns=["ema50"], inplace=True)
             return clean
 
     def get_price_vs_emas(self, current_price: float, df: pd.DataFrame) -> Dict[str, Any]:
         """
-        Determine price position relative to EMA 200 and EMA 50.
-        Bullish = above both, Bearish = below both, otherwise unclear.
+        Determine price position relative to EMA 50.
+        Bullish = above EMA50, Bearish = below EMA50, otherwise unclear.
         """
         try:
-            ema200 = float(df["ema200"].dropna().iloc[-1]) if "ema200" in df.columns and not df["ema200"].dropna().empty else None
             ema50 = float(df["ema50"].dropna().iloc[-1]) if "ema50" in df.columns and not df["ema50"].dropna().empty else None
 
-            above_200 = current_price > ema200 if ema200 is not None else None
             above_50 = current_price > ema50 if ema50 is not None else None
 
-            if ema200 is not None:
-                if above_200 is True and above_50 is True:
-                    ema_bias = "bullish"
-                elif above_200 is False and above_50 is False:
-                    ema_bias = "bearish"
-                else:
-                    ema_bias = "unclear"
-            elif ema50 is not None:
+            if ema50 is not None:
                 ema_bias = "bullish" if above_50 else "bearish"
             else:
                 ema_bias = "unclear"
 
             return {
-                "above_ema200": above_200,
                 "above_ema50": above_50,
-                "ema200_value": round(ema200, 2) if ema200 is not None else None,
                 "ema50_value": round(ema50, 2) if ema50 is not None else None,
                 "ema_bias": ema_bias,
             }
         except Exception as exc:
             logger.error("get_price_vs_emas failed: %s", exc, exc_info=True)
-            return {"above_ema200": None, "above_ema50": None, "ema200_value": None, "ema50_value": None, "ema_bias": "unclear"}
+            return {"above_ema50": None, "ema50_value": None, "ema_bias": "unclear"}
 
     # ─── shared SMC compute ──────────────────────────────────
 
@@ -491,9 +478,7 @@ class StructureAnalyzer:
                 score = 0
 
             return {
-                "above_ema200": ema_result["above_ema200"],
                 "above_ema50": ema_result["above_ema50"],
-                "ema200_value": ema_result["ema200_value"],
                 "ema50_value": ema_result["ema50_value"],
                 "ema_bias": ema_bias,
                 "bos_direction": bos_dir,
@@ -520,8 +505,8 @@ class StructureAnalyzer:
 
     def _fallback(self) -> Dict[str, Any]:
         return {
-            "above_ema200": None, "above_ema50": None, "ema200_value": None,
-            "ema50_value": None, "ema_bias": "unclear", "bos_direction": None,
+            "above_ema50": None, "ema50_value": None,
+            "ema_bias": "unclear", "bos_direction": None,
             "bos_level": None, "bos_bars_ago": 0, "choch_direction": None,
             "choch_recent": False, "wyckoff": "unclear", "structure_bias": "unclear",
             "score_contribution": 0,

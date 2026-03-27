@@ -58,10 +58,10 @@ def _make_checklist_result(engine, trade, sample_news_data):
     }
     engine._structure.get_layer2_result.return_value = {
         "structure_bias": "short", "score_contribution": 1,
-        "above_ema200": True, "above_ema50": False, "ema_bias": "bearish",
+        "above_ema50": False, "ema_bias": "bearish",
         "bos_direction": "bearish", "bos_level": trade["entry"] - 20,
         "bos_bars_ago": 3, "choch_direction": None, "choch_recent": False,
-        "wyckoff": "markdown", "ema200_value": 6400, "ema50_value": trade["entry"] + 20,
+        "wyckoff": "markdown", "ema50_value": trade["entry"] + 20,
         "ob_bullish_nearby": False, "ob_bearish_nearby": False,
         "bullish_obs": [], "bearish_obs": [],
         "range_condition": range_cond,
