@@ -90,12 +90,18 @@ class ChecklistEngine:
     def is_trading_session(self) -> bool:
         """Check whether current SL time falls within the configured trading window.
 
+        Returns False on weekends (Saturday/Sunday) since markets are closed
+        and cTrader only returns stale Friday data.
         Handles midnight-spanning windows (e.g. start=22:00, end=02:00) using
         the same logic as get_current_session.
         """
         try:
             sl_tz = timezone(timedelta(hours=SL_UTC_OFFSET))
             sl_now = datetime.now(sl_tz)
+
+            if sl_now.weekday() >= 5:  # 5=Saturday, 6=Sunday
+                return False
+
             current = sl_now.hour * 60 + sl_now.minute
 
             start_h, start_m = map(int, TRADING_START_SL.split(":"))
@@ -106,7 +112,6 @@ class ChecklistEngine:
             if start_min <= end_min:
                 return start_min <= current < end_min
             else:
-                # window spans midnight (e.g. 22:00 – 02:00)
                 return current >= start_min or current < end_min
         except Exception as exc:
             logger.error("is_trading_session failed: %s", exc, exc_info=True)

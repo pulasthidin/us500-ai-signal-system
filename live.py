@@ -148,6 +148,11 @@ def _run_test_database() -> StartupTest:
     return t
 
 
+def _is_weekend() -> bool:
+    """Check if today is Saturday (5) or Sunday (6) in UTC."""
+    return datetime.now(timezone.utc).weekday() >= 5
+
+
 def _run_test_ctrader() -> StartupTest:
     t = StartupTest("cTrader", critical=True)
     try:
@@ -165,6 +170,10 @@ def _run_test_ctrader() -> StartupTest:
 
         bars = ctrader.fetch_bars(us500_id, "M15", 5)
         if bars is None or bars.empty:
+            if _is_weekend():
+                t.passed = True
+                t.detail = f"US500:{us500_id} (weekend — no bars expected)"
+                return t
             raise ConnectionError("No M15 bars returned")
 
         price = float(bars["close"].iloc[-1])
@@ -272,6 +281,10 @@ def _run_test_smc() -> StartupTest:
         from smartmoneyconcepts import smc
         bars = ctrader.fetch_bars(us500_id, "M5", 50)
         if bars is None or bars.empty:
+            if _is_weekend():
+                t.passed = True
+                t.detail = "weekend — skipped bar test"
+                return t
             raise ConnectionError("No M5 bars for SMC test")
         smc.fvg(bars)
         swing = smc.swing_highs_lows(bars, swing_length=5)
@@ -288,6 +301,10 @@ def _run_test_pandas_ta() -> StartupTest:
         import pandas_ta as ta
         bars = ctrader.fetch_bars(us500_id, "H4", 100)
         if bars is None or bars.empty:
+            if _is_weekend():
+                t.passed = True
+                t.detail = "weekend — skipped bar test"
+                return t
             raise ConnectionError("No H4 bars for EMA test")
         ema50 = ta.ema(bars["close"], length=50)
         if ema50 is None or ema50.dropna().empty:

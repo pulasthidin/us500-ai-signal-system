@@ -38,6 +38,24 @@ class TestSessionDetection:
             result = engine.is_trading_session()
             assert isinstance(result, bool)
 
+    def test_is_trading_session_false_on_saturday(self, engine):
+        sl_tz = timezone(timedelta(hours=5.5))
+        saturday = datetime(2026, 3, 28, 14, 0, tzinfo=sl_tz)  # Saturday
+        assert saturday.weekday() == 5
+        with patch("src.checklist_engine.datetime") as mock_dt:
+            mock_dt.now.return_value = saturday
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            assert engine.is_trading_session() is False
+
+    def test_is_trading_session_false_on_sunday(self, engine):
+        sl_tz = timezone(timedelta(hours=5.5))
+        sunday = datetime(2026, 3, 29, 14, 0, tzinfo=sl_tz)  # Sunday
+        assert sunday.weekday() == 6
+        with patch("src.checklist_engine.datetime") as mock_dt:
+            mock_dt.now.return_value = sunday
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            assert engine.is_trading_session() is False
+
     def test_get_current_session_returns_string(self, engine):
         session = engine.get_current_session()
         assert isinstance(session, str)
