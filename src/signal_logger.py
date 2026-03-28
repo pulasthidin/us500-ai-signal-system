@@ -129,6 +129,11 @@ CREATE TABLE IF NOT EXISTS signals (
     hour_utc INTEGER,
     data_version INTEGER DEFAULT 2,
 
+    signals_last_60min INTEGER DEFAULT NULL,
+    losses_last_60min INTEGER DEFAULT NULL,
+    minutes_since_last_signal REAL DEFAULT NULL,
+    recent_avg_pnl REAL DEFAULT NULL,
+
     outcome TEXT DEFAULT NULL,
     outcome_label INTEGER DEFAULT NULL,
     bars_to_outcome INTEGER DEFAULT NULL,
@@ -208,6 +213,10 @@ class SignalLogger:
             ("tp1_points", "REAL"),
             ("tp1_hit", "INTEGER"),
             ("tp1_hit_timestamp", "TEXT"),
+            ("signals_last_60min", "INTEGER"),
+            ("losses_last_60min", "INTEGER"),
+            ("minutes_since_last_signal", "REAL"),
+            ("recent_avg_pnl", "REAL"),
         ]
         for col_name, col_type in migrations:
             if col_name not in existing:
@@ -323,6 +332,8 @@ class SignalLogger:
                             displacement_valid, asian_high, asian_low, sl_method,
                             fvg_age_bars, fvg_size_points, range_size_points, price_in_range_pct,
                             asian_range_size, hour_utc, data_version,
+                            signals_last_60min, losses_last_60min,
+                            minutes_since_last_signal, recent_avg_pnl,
                             save_status
                         ) VALUES (
                             ?, ?, ?, ?, ?, ?, ?,
@@ -339,6 +350,7 @@ class SignalLogger:
                             ?, ?, ?, ?,
                             ?, ?, ?, ?,
                             ?, ?, ?, ?, ?, ?, ?,
+                            ?, ?, ?, ?,
                             ?
                         )
                         """,
@@ -439,6 +451,11 @@ class SignalLogger:
                             asian_range_size,
                             hour_utc,
                             2,
+
+                            result.get("signals_last_60min"),
+                            result.get("losses_last_60min"),
+                            result.get("minutes_since_last_signal"),
+                            result.get("recent_avg_pnl"),
 
                             "complete",
                         ),
@@ -763,6 +780,66 @@ class SignalLogger:
         except Exception as exc:
             logger.error("is_duplicate failed: %s", exc, exc_info=True)
             return False
+
+    # ─── signal context for ML ────────────────────────────────
+
+    def get_recent_context(self, direction: str) -> Dict[str, Any]:
+        """Compute context features from recent signal history for ML consumption."""
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            cutoff_60 = (datetime.now(timezone.utc) - timedelta(minutes=60)).isoformat()
+
+            sig_count = self._query(
+                "SELECT COUNT(*) as cnt FROM signals WHERE timestamp > ?",
+                (cutoff_60,), fetchall=False,
+            )
+            signals_last_60min = sig_count["cnt"] if sig_count else 0
+
+            loss_count = self._query(
+                "SELECT COUNT(*) as cnt FROM signals "
+                "WHERE timestamp > ? AND direction = ? AND outcome_label = -1",
+                (cutoff_60, direction), fetchall=False,
+            )
+            losses_last_60min = loss_count["cnt"] if loss_count else 0
+
+            last_ts = self._query(
+                "SELECT timestamp FROM signals ORDER BY id DESC LIMIT 1",
+                fetchall=False,
+            )
+            minutes_since_last_signal = None
+            if last_ts and last_ts["timestamp"]:
+                try:
+                    last_dt = datetime.fromisoformat(last_ts["timestamp"])
+                    if last_dt.tzinfo is None:
+                        last_dt = last_dt.replace(tzinfo=timezone.utc)
+                    delta = datetime.now(timezone.utc) - last_dt
+                    minutes_since_last_signal = round(delta.total_seconds() / 60.0, 1)
+                except Exception:
+                    pass
+
+            recent_pnl = self._query(
+                "SELECT pnl_points FROM signals "
+                "WHERE outcome IS NOT NULL AND pnl_points IS NOT NULL "
+                "ORDER BY id DESC LIMIT 5",
+            )
+            recent_avg_pnl = None
+            if recent_pnl:
+                pnl_vals = [r["pnl_points"] for r in recent_pnl]
+                if pnl_vals:
+                    recent_avg_pnl = round(sum(pnl_vals) / len(pnl_vals), 2)
+
+            return {
+                "signals_last_60min": signals_last_60min,
+                "losses_last_60min": losses_last_60min,
+                "minutes_since_last_signal": minutes_since_last_signal,
+                "recent_avg_pnl": recent_avg_pnl,
+            }
+        except Exception as exc:
+            logger.error("get_recent_context failed: %s", exc, exc_info=True)
+            return {
+                "signals_last_60min": None, "losses_last_60min": None,
+                "minutes_since_last_signal": None, "recent_avg_pnl": None,
+            }
 
     # ─── pattern alerts ──────────────────────────────────────
 

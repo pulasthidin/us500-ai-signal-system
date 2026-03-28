@@ -661,6 +661,8 @@ def main_signal_check() -> None:
                         pass
 
             if is_real_signal:
+                context = signal_logger.get_recent_context(direction)
+                checklist_result.update(context)
                 signal_id = signal_logger.log_signal(checklist_result)
                 if signal_id is not None:
                     checklist_result["signal_id"] = signal_id

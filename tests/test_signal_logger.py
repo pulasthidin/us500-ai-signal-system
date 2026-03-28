@@ -525,3 +525,90 @@ class TestTrainingDataExport:
         summary = logger_db.get_weekly_summary(cutoff)
         assert summary["total"] >= 1
         assert summary["wins"] >= 1
+
+
+def _result_ts(ago: timedelta, **kwargs):
+    r = _make_result(**kwargs)
+    r["timestamp"] = (datetime.now(timezone.utc) - ago).isoformat()
+    return r
+
+
+class TestGetRecentContext:
+    def test_empty_db_returns_zeros(self, logger_db):
+        ctx = logger_db.get_recent_context("LONG")
+        assert ctx["signals_last_60min"] == 0
+        assert ctx["losses_last_60min"] == 0
+        assert ctx["minutes_since_last_signal"] is None
+        assert ctx["recent_avg_pnl"] is None
+
+    def test_counts_signals_in_last_60_min(self, logger_db):
+        logger_db.log_signal(_result_ts(timedelta(minutes=30)))
+        logger_db.log_signal(_result_ts(timedelta(minutes=10)))
+        logger_db.log_signal(_result_ts(timedelta(hours=2)))
+        ctx = logger_db.get_recent_context("LONG")
+        assert ctx["signals_last_60min"] == 2
+
+    def test_counts_losses_same_direction(self, logger_db):
+        now_iso = datetime.now(timezone.utc).isoformat()
+        s1 = logger_db.log_signal(_result_ts(timedelta(minutes=20), direction="SHORT"))
+        s2 = logger_db.log_signal(_result_ts(timedelta(minutes=15), direction="SHORT"))
+        s3 = logger_db.log_signal(_result_ts(timedelta(minutes=5), direction="SHORT"))
+        logger_db.update_outcome(s1, "LOSS", -1, 5, -10.0, now_iso)
+        logger_db.update_outcome(s2, "LOSS", -1, 5, -10.0, now_iso)
+        logger_db.update_outcome(s3, "WIN", 1, 5, 10.0, now_iso)
+        ctx = logger_db.get_recent_context("SHORT")
+        assert ctx["losses_last_60min"] == 2
+
+    def test_losses_ignores_other_direction(self, logger_db):
+        now_iso = datetime.now(timezone.utc).isoformat()
+        logger_db.update_outcome(
+            logger_db.log_signal(_result_ts(timedelta(minutes=12), direction="SHORT")),
+            "LOSS", -1, 3, -5.0, now_iso,
+        )
+        logger_db.update_outcome(
+            logger_db.log_signal(_result_ts(timedelta(minutes=11), direction="SHORT")),
+            "LOSS", -1, 3, -5.0, now_iso,
+        )
+        logger_db.update_outcome(
+            logger_db.log_signal(_result_ts(timedelta(minutes=10), direction="LONG")),
+            "LOSS", -1, 3, -5.0, now_iso,
+        )
+        ctx = logger_db.get_recent_context("SHORT")
+        assert ctx["losses_last_60min"] == 2
+
+    def test_minutes_since_last_signal(self, logger_db):
+        logger_db.log_signal(_result_ts(timedelta(minutes=15)))
+        ctx = logger_db.get_recent_context("LONG")
+        assert ctx["minutes_since_last_signal"] is not None
+        assert 14.0 <= ctx["minutes_since_last_signal"] <= 16.0
+
+    def test_recent_avg_pnl(self, logger_db):
+        now_iso = datetime.now(timezone.utc).isoformat()
+        pnls = [10.0, -5.0, 15.0, -20.0, 10.0]
+        for pnl in pnls:
+            sid = logger_db.log_signal(_make_result())
+            logger_db.update_outcome(sid, "WIN" if pnl > 0 else "LOSS", 1 if pnl > 0 else -1, 5, pnl, now_iso)
+        ctx = logger_db.get_recent_context("LONG")
+        assert ctx["recent_avg_pnl"] == 2.0
+
+    def test_recent_avg_pnl_fewer_than_5(self, logger_db):
+        now_iso = datetime.now(timezone.utc).isoformat()
+        s1 = logger_db.log_signal(_make_result())
+        s2 = logger_db.log_signal(_make_result())
+        logger_db.update_outcome(s1, "WIN", 1, 5, 10.0, now_iso)
+        logger_db.update_outcome(s2, "WIN", 1, 5, 30.0, now_iso)
+        ctx = logger_db.get_recent_context("LONG")
+        assert ctx["recent_avg_pnl"] == 20.0
+
+    def test_error_returns_safe_fallback(self, logger_db, monkeypatch):
+        def _boom(*_a, **_kw):
+            raise RuntimeError("db closed")
+
+        monkeypatch.setattr(logger_db, "_query", _boom)
+        ctx = logger_db.get_recent_context("LONG")
+        assert ctx == {
+            "signals_last_60min": None,
+            "losses_last_60min": None,
+            "minutes_since_last_signal": None,
+            "recent_avg_pnl": None,
+        }

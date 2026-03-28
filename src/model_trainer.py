@@ -349,6 +349,9 @@ class ModelTrainer:
         # --- AMD / Asian session ---
         "asian_range_size",
         "sweep_bars_ago",
+        # --- signal context ---
+        "signals_last_60min", "losses_last_60min",
+        "minutes_since_last_signal", "recent_avg_pnl",
         # --- time / context ---
         "score", "is_monday", "is_friday", "is_news_day",
         "hour_utc", "data_version",
@@ -399,6 +402,8 @@ class ModelTrainer:
                 "range_size_points", "price_in_range_pct",
                 "asian_range_size", "sweep_bars_ago",
                 "hour_utc", "data_version",
+                "signals_last_60min", "losses_last_60min",
+                "minutes_since_last_signal", "recent_avg_pnl",
             ]
             for nc in numeric_cols:
                 if nc in df.columns:
