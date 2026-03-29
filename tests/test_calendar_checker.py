@@ -42,7 +42,8 @@ class TestGetNewsStatus:
     def test_no_news_day(self, checker):
         checker._events = []
         checker._last_fetch_date = None
-        with patch.object(checker, "fetch_weekly_calendar", return_value=[]):
+        with patch.object(checker, "fetch_weekly_calendar", return_value=[]), \
+             patch("src.calendar_checker.CACHE_PATH", "__nonexistent__"):
             status = checker.get_news_status()
         assert status["is_news_day"] is False
         assert status["pre_news_blocked"] is False

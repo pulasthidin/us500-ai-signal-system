@@ -15,8 +15,8 @@ SESSIONS_UTC = {
 
 SL_UTC_OFFSET = 5.5  # Sri Lanka is UTC+5:30
 
-TRADING_START_SL = "05:30"
-TRADING_END_SL = "23:00"
+TRADING_START_SL = "05:00"
+TRADING_END_SL = "23:30"
 
 # ──────────────────────────────────────────────
 # SYMBOLS

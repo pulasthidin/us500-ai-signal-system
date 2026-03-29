@@ -250,7 +250,12 @@ class ModelPredictor:
     # ─── internal helpers ────────────────────────────────────
 
     def _flatten_checklist(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        """Flatten a nested checklist result into a single-level dict for DataFrame creation."""
+        """Flatten a nested checklist result into a single-level dict for DataFrame creation.
+
+        Aligns key names to match the DB column names that the model was trained on.
+        Extracts nested sub-dicts (fvg_details, asian_range, sweep_details, range_condition)
+        and computes derived values (fvg_size_points, range_size_points, etc.).
+        """
         flat: Dict[str, Any] = {}
         for key in ("layer1", "layer2", "layer3", "layer4", "entry"):
             sub = result.get(key)
@@ -259,6 +264,66 @@ class ModelPredictor:
         for k, v in result.items():
             if k not in ("layer1", "layer2", "layer3", "layer4", "entry", "ml"):
                 flat[k] = v
+
+        # Key renames: checklist key -> DB column name
+        _renames = {
+            "vix_value": "vix_level",
+            "bias": "macro_bias",
+            "bos_direction": "h4_bos",
+            "distance": "zone_distance",
+            "m5_bos_confirmed": "m5_bos",
+        }
+        for old, new in _renames.items():
+            if old in flat and new not in flat:
+                flat[new] = flat[old]
+
+        # Extract nested fvg_details
+        fvg = flat.get("fvg_details") or {}
+        if isinstance(fvg, dict):
+            flat.setdefault("fvg_age_bars", fvg.get("age_bars"))
+            top = fvg.get("top")
+            bottom = fvg.get("bottom")
+            if top is not None and bottom is not None:
+                flat.setdefault("fvg_size_points", round(abs(top - bottom), 2))
+
+        # Extract nested asian_range
+        asian = flat.get("asian_range") or {}
+        if isinstance(asian, dict):
+            a_high = asian.get("asian_high")
+            a_low = asian.get("asian_low")
+            if a_high is not None and a_low is not None:
+                flat.setdefault("asian_range_size", round(a_high - a_low, 2))
+
+        # Extract nested sweep_details
+        sweep = flat.get("sweep_details") or {}
+        if isinstance(sweep, dict):
+            flat.setdefault("sweep_level_type", sweep.get("level_type"))
+            flat.setdefault("sweep_side", sweep.get("sweep_side"))
+            flat.setdefault("sweep_bars_ago", sweep.get("bars_ago"))
+
+        # Extract nested range_condition
+        rc = flat.get("range_condition") or {}
+        if isinstance(rc, dict):
+            flat.setdefault("is_ranging", rc.get("is_ranging"))
+            flat.setdefault("range_strength", rc.get("range_strength"))
+            flat.setdefault("adx_value", rc.get("adx_value"))
+            flat.setdefault("atr_compressing", rc.get("atr_compressing"))
+            r_high = rc.get("range_high")
+            r_low = rc.get("range_low")
+            if r_high is not None and r_low is not None:
+                flat.setdefault("range_size_points", round(r_high - r_low, 2))
+            cp = flat.get("current_price", 0)
+            if r_high and r_low and r_high > r_low and cp > 0:
+                flat.setdefault("price_in_range_pct", round((cp - r_low) / (r_high - r_low) * 100, 1))
+
+        # Compute hour_utc if missing
+        if "hour_utc" not in flat:
+            try:
+                from datetime import datetime, timezone
+                flat["hour_utc"] = datetime.now(timezone.utc).hour
+            except Exception:
+                pass
+
         return flat
 
     @staticmethod
