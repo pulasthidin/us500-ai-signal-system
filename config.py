@@ -121,7 +121,7 @@ MAX_BARS_MEMORY = 500
 MODEL_RETRAIN_SIGNAL_THRESHOLD = 200
 MODEL_INCREMENTAL_THRESHOLD = 50
 MODEL_RETRAIN_DAY = "sunday"
-MODEL_RETRAIN_TIME_SL = "23:00"
+MODEL_RETRAIN_TIME_SL = "17:00"
 
 # ──────────────────────────────────────────────
 # SCHEDULING
@@ -164,7 +164,7 @@ VIX_SPIKE_THRESHOLD_PCT = 3.0  # real-time spike gate on M15
 # ──────────────────────────────────────────────
 # WEEKLY REPORT
 # ──────────────────────────────────────────────
-WEEKLY_REPORT_TIME_UTC = "17:30"
+WEEKLY_REPORT_TIME_UTC = "11:30"
 
 # ──────────────────────────────────────────────
 # YFINANCE TICKERS

@@ -7,7 +7,8 @@ echo Do not close this window.
 echo Telegram will confirm when ready.
 echo.
 set PYTHONIOENCODING=utf-8
-python live.py
+set PYTHONUTF8=1
+"C:\Users\Pulasthi.Ranathunga\AppData\Local\Programs\Python\Python314\python.exe" live.py
 
 REM If app crashes show error
 if errorlevel 1 (

@@ -889,8 +889,8 @@ class SignalLogger:
                        SUM(CASE WHEN matched_signal_id IS NOT NULL THEN 1 ELSE 0 END) as matched
                 FROM pattern_alerts
             """, fetchall=False)
-            total = row["total"] if row else 0
-            matched = row["matched"] if row else 0
+            total = row["total"] or 0 if row else 0
+            matched = row["matched"] or 0 if row else 0
             wins = 0
             if matched > 0:
                 w = self._query("""
