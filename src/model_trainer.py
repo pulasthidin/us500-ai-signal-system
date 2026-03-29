@@ -412,7 +412,7 @@ class ModelTrainer:
             available = [c for c in self.META_FEATURE_COLS if c in df.columns]
             missing = [c for c in self.META_FEATURE_COLS if c not in df.columns]
             if missing:
-                logger.warning("Meta features missing from data: %s", missing[:10])
+                logger.debug("Meta features missing from data: %s", missing[:10])
             return df[available]
 
         except Exception as exc:
