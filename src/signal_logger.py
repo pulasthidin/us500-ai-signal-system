@@ -272,8 +272,10 @@ class SignalLogger:
         """
         Insert a new signal row atomically.
         Uses SQLite transaction: either the full row commits or nothing does.
+        Acquires _dedup_lock to prevent race between is_duplicate check and insert.
         """
         try:
+            self._dedup_lock.acquire()
             layer1 = result.get("layer1", {})
             layer2 = result.get("layer2", {})
             layer3 = result.get("layer3", {})
@@ -469,6 +471,8 @@ class SignalLogger:
         except Exception as exc:
             logger.error("log_signal failed: %s", exc, exc_info=True)
             return None
+        finally:
+            self._dedup_lock.release()
 
     # ─── outcome update ──────────────────────────────────────
 

@@ -20,6 +20,8 @@ from config import (
     SL_UTC_OFFSET,
     TRADING_END_SL,
     TRADING_START_SL,
+    VIX_BEARISH_CONFIRMATION_THRESHOLD,
+    VIX_HARD_STOP_THRESHOLD,
 )
 
 logger = logging.getLogger("checklist")
@@ -84,7 +86,8 @@ class ChecklistEngine:
             sl_tz = timezone(timedelta(hours=SL_UTC_OFFSET))
             sl_now = datetime.now(sl_tz)
             return sl_now.strftime("%H:%M SL")
-        except Exception:
+        except Exception as exc:
+            logger.error("get_sl_time failed: %s", exc, exc_info=True)
             return "??:?? SL"
 
     def is_trading_session(self) -> bool:
@@ -352,6 +355,18 @@ class ChecklistEngine:
         if vix_dir == "BUY_BIAS" and struct_bias == "long":
             return "LONG", "high"
 
+        # Priority 2.5 — Elevated VIX level confirms bearish structure
+        # VIX >= 25 = institutional fear/hedging. When H4 structure is also bearish,
+        # the absolute VIX level confirms the SHORT bias regardless of daily VIX direction
+        # or mixed macro readings. This is a stronger signal than structure alone.
+        vix_value = layer1.get("vix_value") or 0
+        if vix_value >= VIX_BEARISH_CONFIRMATION_THRESHOLD and struct_bias == "short":
+            logger.info(
+                "Direction from VIX level + structure: SHORT (vix=%.1f macro=%s confidence=high)",
+                vix_value, macro_bias,
+            )
+            return "SHORT", "high"
+
         # Priority 3 — EMA + macro/VIX when structure unclear
         if struct_bias == "unclear":
             ema_bias = layer2.get("ema_bias")
@@ -393,9 +408,9 @@ class ChecklistEngine:
                 return result
 
             vix_val = result["layer1"].get("vix_value") or 0
-            if vix_val >= 30:
+            if vix_val >= VIX_HARD_STOP_THRESHOLD:
                 result["decision"] = "HARD_STOP"
-                result["block_reason"] = "VIX >= 30"
+                result["block_reason"] = f"VIX >= {VIX_HARD_STOP_THRESHOLD}"
                 result["grade"] = None
                 return result
 
@@ -421,7 +436,7 @@ class ChecklistEngine:
             layer1 = result.get("layer1", {})
             if layer1.get("short_only") and result.get("direction") == "LONG":
                 result["decision"] = "NO_TRADE"
-                result["block_reason"] = "VIX 25-30 short only"
+                result["block_reason"] = "VIX short only"
 
             if result.get("direction_confidence") == "reduced":
                 result["caution_flags"].append("STRUCT-ONLY DIRECTION — macro conflicts")
@@ -466,7 +481,7 @@ class ChecklistEngine:
 
             if self._hard_stop_active:
                 self._hard_stop_active = False
-                logger.info("VIX dropped below 30 — HARD_STOP cleared")
+                logger.info("HARD_STOP cleared — non-HARD_STOP decision received")
 
             if decision == "WAIT" and result.get("score", 0) >= GRADE_B_SCORE:
                 if not result.get("direction"):

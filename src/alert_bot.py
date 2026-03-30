@@ -413,16 +413,33 @@ class AlertBot:
     # ──────────────────────────────────────────────────────────
 
     def _get_loop(self) -> asyncio.AbstractEventLoop:
-        """Return a persistent event loop for Telegram calls (created once, reused)."""
+        """Return a persistent event loop for Telegram calls.
+
+        When the loop is recreated (after a crash or close), the Bot instances
+        are also recreated so their internal httpx connections are bound to the
+        new loop.  This prevents 'Event loop is closed' errors on stale connections.
+        """
         if self._loop is None or self._loop.is_closed():
             self._loop = asyncio.new_event_loop()
+            if self._trade_token:
+                self._trade_bot = telegram.Bot(token=self._trade_token)
+            if self._system_token:
+                self._system_bot = telegram.Bot(token=self._system_token)
         return self._loop
 
-    def _run_async(self, coro):
-        """Run an async coroutine from sync context, safe with Twisted reactor."""
+    def _run_async(self, coro) -> bool:
+        """Run an async coroutine from sync context. Returns True on success."""
         try:
             loop = self._get_loop()
             loop.run_until_complete(coro)
+            return True
+        except RuntimeError as exc:
+            if "Event loop is closed" in str(exc):
+                logger.warning("Event loop closed mid-send, will recreate on next call: %s", exc)
+            else:
+                logger.error("_run_async RuntimeError: %s", exc, exc_info=True)
+            self._loop = None
+            return False
         except Exception as exc:
             logger.error("_run_async failed: %s", exc, exc_info=True)
             if self._loop is not None:
@@ -431,13 +448,17 @@ class AlertBot:
                 except Exception:
                     pass
             self._loop = None
+            return False
 
     def send_trade_message(self, message: str) -> None:
         """Send an arbitrary text message to the TRADE channel."""
         try:
             if self._trade_bot and self._trade_chat_id:
-                self._run_async(self._trade_bot.send_message(chat_id=self._trade_chat_id, text=message))
-                logger.info("Trade message sent (%d chars)", len(message))
+                ok = self._run_async(self._trade_bot.send_message(chat_id=self._trade_chat_id, text=message))
+                if ok:
+                    logger.info("Trade message sent (%d chars)", len(message))
+                else:
+                    logger.warning("Trade message send failed (%d chars)", len(message))
         except Exception as exc:
             logger.error("send_trade_message failed: %s", exc, exc_info=True)
 
@@ -481,10 +502,14 @@ class AlertBot:
                 self._system_alert_cache = {k: v for k, v in self._system_alert_cache.items() if v > cutoff}
 
             msg = self.format_system_alert(level, component, message)
+            sent = False
             if self._system_bot and self._system_chat_id:
-                self._run_async(self._system_bot.send_message(chat_id=self._system_chat_id, text=msg))
-            self._system_alert_cache[cache_key] = now
-            logger.info("System alert sent: [%s] %s — %s", level, component, message[:80])
+                sent = self._run_async(self._system_bot.send_message(chat_id=self._system_chat_id, text=msg))
+            if sent:
+                self._system_alert_cache[cache_key] = now
+                logger.info("System alert sent: [%s] %s — %s", level, component, message[:80])
+            else:
+                logger.warning("System alert send failed: [%s] %s — will retry next cycle", level, component)
         except Exception as exc:
             logger.error("send_system_alert failed: %s", exc, exc_info=True)
 

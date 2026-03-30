@@ -278,6 +278,12 @@ class OutcomeTracker:
         if entry_time and ts_col:
             bars_df[ts_col] = pd.to_datetime(bars_df[ts_col], utc=True)
             bars_after = bars_df[bars_df[ts_col] >= entry_time]
+        elif entry_time and not ts_col:
+            logger.warning(
+                "Signal %s: no timestamp column in bars — cannot filter pre-entry bars, using all %d bars",
+                "?", len(bars_df),
+            )
+            bars_after = bars_df
         else:
             bars_after = bars_df
 
@@ -348,9 +354,35 @@ class OutcomeTracker:
                 continue
 
             if sl_hit and tp2_hit:
-                return self._barrier_result("LOSS", -1, bar_num, signal, bar, ts_col or "timestamp")
+                if direction == "SHORT":
+                    sl_dist = abs(bar["high"] - entry_price)
+                    tp_dist = abs(entry_price - bar["low"])
+                else:
+                    sl_dist = abs(entry_price - bar["low"])
+                    tp_dist = abs(bar["high"] - entry_price)
+                if tp_dist >= sl_dist:
+                    pnl = self._calc_full_pnl_after_tp1(signal) if tp1_price else self.calculate_pnl(signal, "WIN")
+                    ts = str(bar.get(ts_col, "")) if ts_col else datetime.now(timezone.utc).isoformat()
+                    logger.info("Signal %s: SL+TP2 same bar — TP closer to open, resolving as WIN", signal.get("id"))
+                    return {"outcome": "WIN", "label": 1, "bars_to_outcome": bar_num, "pnl_points": pnl, "outcome_timestamp": ts}
+                else:
+                    logger.info("Signal %s: SL+TP2 same bar — SL closer to open, resolving as LOSS", signal.get("id"))
+                    return self._barrier_result("LOSS", -1, bar_num, signal, bar, ts_col or "timestamp")
             if sl_hit and tp1_hit:
-                return self._barrier_result("LOSS", -1, bar_num, signal, bar, ts_col or "timestamp")
+                if direction == "SHORT":
+                    sl_dist = abs(bar["high"] - entry_price)
+                    tp1_dist = abs(entry_price - bar["low"])
+                else:
+                    sl_dist = abs(entry_price - bar["low"])
+                    tp1_dist = abs(bar["high"] - entry_price)
+                if tp1_dist >= sl_dist:
+                    ts = str(bar.get(ts_col, "")) if ts_col else datetime.now(timezone.utc).isoformat()
+                    pnl = self._calc_tp1_pnl(signal)
+                    logger.info("Signal %s: SL+TP1 same bar — TP1 closer to open, resolving as PARTIAL_WIN", signal.get("id"))
+                    return {"outcome": "PARTIAL_WIN", "label": 1, "bars_to_outcome": bar_num, "pnl_points": pnl, "outcome_timestamp": ts, "tp1_hit": True}
+                else:
+                    logger.info("Signal %s: SL+TP1 same bar — SL closer to open, resolving as LOSS", signal.get("id"))
+                    return self._barrier_result("LOSS", -1, bar_num, signal, bar, ts_col or "timestamp")
             if sl_hit:
                 return self._barrier_result("LOSS", -1, bar_num, signal, bar, ts_col or "timestamp")
             if tp2_hit:

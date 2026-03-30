@@ -192,6 +192,38 @@ class TestDirectionDerivation:
         assert direction == "LONG"
         assert confidence == "medium"
 
+    def test_high_vix_level_confirms_bearish_structure(self, engine):
+        """VIX >= 25 + bearish structure = high-confidence SHORT regardless of macro."""
+        layer1 = {"bias": "MIXED", "vix_direction_bias": "NEUTRAL", "vix_value": 30.5}
+        layer2 = {"structure_bias": "short", "ema_bias": "bearish"}
+        direction, confidence = engine._derive_direction(layer1, layer2)
+        assert direction == "SHORT"
+        assert confidence == "high"
+
+    def test_high_vix_level_does_not_boost_long(self, engine):
+        """VIX >= 25 should NOT boost LONG confidence — high VIX is bearish."""
+        layer1 = {"bias": "LONG", "vix_direction_bias": "BUY_BIAS", "vix_value": 28.0}
+        layer2 = {"structure_bias": "long", "ema_bias": "bullish"}
+        direction, confidence = engine._derive_direction(layer1, layer2)
+        assert direction == "LONG"
+        assert confidence == "high"  # from Priority 1, not VIX level boost
+
+    def test_vix_level_25_boundary_activates(self, engine):
+        """Exactly VIX 25 should activate the confidence boost."""
+        layer1 = {"bias": "MIXED", "vix_direction_bias": "NEUTRAL", "vix_value": 25.0}
+        layer2 = {"structure_bias": "short", "ema_bias": "bearish"}
+        direction, confidence = engine._derive_direction(layer1, layer2)
+        assert direction == "SHORT"
+        assert confidence == "high"
+
+    def test_vix_below_25_falls_through_to_structure_alone(self, engine):
+        """VIX 24.9 with MIXED macro should give reduced confidence (Priority 4)."""
+        layer1 = {"bias": "MIXED", "vix_direction_bias": "NEUTRAL", "vix_value": 24.9, "short_only": False}
+        layer2 = {"structure_bias": "short", "ema_bias": "bearish"}
+        direction, confidence = engine._derive_direction(layer1, layer2)
+        assert direction == "SHORT"
+        assert confidence == "reduced"
+
     def test_no_direction_when_all_unclear(self, engine):
         layer1 = {"bias": "MIXED", "vix_direction_bias": "NEUTRAL"}
         layer2 = {"structure_bias": "unclear", "ema_bias": "unclear"}
@@ -215,15 +247,40 @@ class TestDirectionDerivation:
 
 
 class TestFilters:
-    def test_hard_stop_on_vix_over_30(self, engine, sample_news_data):
+    def test_hard_stop_on_vix_over_threshold(self, engine, sample_news_data):
         result = {
-            "layer1": {"vix_value": 35.0}, "direction": "SHORT",
+            "layer1": {"vix_value": 36.0}, "direction": "SHORT",
             "score": 4, "grade": "A", "decision": "FULL_SEND",
             "caution_flags": [], "block_reason": None,
         }
         filtered = engine.apply_all_filters(result, sample_news_data)
         assert filtered["decision"] == "HARD_STOP"
-        assert filtered["block_reason"] == "VIX >= 30"
+        assert "VIX >=" in filtered["block_reason"]
+
+    def test_vix_30_to_35_allows_short_only(self, engine, sample_news_data):
+        """VIX 30-35 is extreme but not panic — SHORT trades at quarter size should pass filters."""
+        result = {
+            "layer1": {"vix_value": 31.0, "short_only": True},
+            "direction": "SHORT", "score": 3, "grade": "B",
+            "decision": "HALF_SIZE", "caution_flags": [], "block_reason": None,
+            "entry_ready": True, "has_liquidity_sweep": False,
+            "direction_confidence": "high",
+            "range_condition": {"is_ranging": False},
+        }
+        filtered = engine.apply_all_filters(result, sample_news_data)
+        assert filtered["decision"] != "HARD_STOP"
+        assert filtered["decision"] != "NO_TRADE" or "short only" in (filtered.get("block_reason") or "")
+
+    def test_vix_30_to_35_blocks_long(self, engine, sample_news_data):
+        """VIX 30-35 extreme bucket has short_only=True, so LONG must be blocked."""
+        result = {
+            "layer1": {"vix_value": 32.0, "short_only": True},
+            "direction": "LONG", "score": 4, "grade": "A",
+            "decision": "FULL_SEND", "caution_flags": [], "block_reason": None,
+        }
+        filtered = engine.apply_all_filters(result, sample_news_data)
+        assert filtered["decision"] == "NO_TRADE"
+        assert "short only" in filtered["block_reason"]
 
     def test_pre_news_blocks(self, engine):
         news = {"pre_news_blocked": True, "pre_news_event": "CPI", "is_news_day": True,

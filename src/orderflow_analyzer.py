@@ -258,14 +258,21 @@ class OrderFlowAnalyzer:
 
             confirms = False
             if direction and not vix_spiking:
-                if direction.upper() == "SHORT" and delta_dir == "sellers":
+                delta_agrees = (
+                    (direction.upper() == "SHORT" and delta_dir == "sellers")
+                    or (direction.upper() == "LONG" and delta_dir == "buyers")
+                )
+                delta_contradicts = (
+                    (direction.upper() == "SHORT" and delta_dir == "buyers")
+                    or (direction.upper() == "LONG" and delta_dir == "sellers")
+                )
+                divergence_agrees = (
+                    (divergence == "bearish" and direction.upper() == "SHORT")
+                    or (divergence == "bullish" and direction.upper() == "LONG")
+                )
+                if delta_agrees:
                     confirms = True
-                elif direction.upper() == "LONG" and delta_dir == "buyers":
-                    confirms = True
-
-                if divergence == "bearish" and direction.upper() == "SHORT":
-                    confirms = True
-                elif divergence == "bullish" and direction.upper() == "LONG":
+                elif divergence_agrees and not delta_contradicts:
                     confirms = True
 
             score = 1 if confirms and not vix_spiking else 0

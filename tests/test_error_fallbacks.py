@@ -129,7 +129,7 @@ class TestMacroCheckerFallback:
         assert result["vix_value"] == 0.0
         assert result["vix_pct"] == 0.0
         assert result["size_label"] == "normal"
-        assert result["trade_allowed"] is True
+        assert result["trade_allowed"] is False
         assert result["short_only"] is False
         assert result["vix_direction_bias"] == "NEUTRAL"
         assert result["us10y_direction"] == "flat"

@@ -670,16 +670,20 @@ def main_signal_check() -> None:
                 signal_id = signal_logger.log_signal(checklist_result)
                 if signal_id is not None:
                     checklist_result["signal_id"] = signal_id
+                else:
+                    logger.error("log_signal returned None — DB write failed, sending alert anyway")
 
-            if signal_id is not None or not is_real_signal:
-                alert_bot.send_trade_alert(checklist_result, ml_result)
+            alert_bot.send_trade_alert(checklist_result, ml_result)
 
             if is_real_signal and pa_match and checklist_result.get("signal_id") is not None:
                 signal_logger.update_pattern_alert_match(pa_match["id"], checklist_result["signal_id"])
 
     except Exception as exc:
         logger.error("Signal check error: %s", exc, exc_info=True)
-        alert_bot.send_system_alert("WARNING", "signal_loop", str(exc))
+        try:
+            alert_bot.send_system_alert("WARNING", "signal_loop", str(exc))
+        except Exception:
+            logger.error("Failed to send signal_loop error alert to Telegram")
 
 
 def send_morning_brief() -> None:
@@ -706,11 +710,21 @@ def weekly_report_and_retrain() -> None:
     evo_result = {}
     try:
         model_trainer.check_and_retrain()
-        model_predictor.load_all_models()
-        evo_result = evolution_manager.run_evolution_check()
     except Exception as exc:
         logger.error("Weekly retrain failed: %s", exc, exc_info=True)
         alert_bot.send_system_alert("WARNING", "weekly_retrain", str(exc))
+
+    try:
+        model_predictor.load_all_models()
+    except Exception as exc:
+        logger.error("Model reload failed: %s", exc, exc_info=True)
+        alert_bot.send_system_alert("WARNING", "model_reload", str(exc))
+
+    try:
+        evo_result = evolution_manager.run_evolution_check()
+    except Exception as exc:
+        logger.error("Evolution check failed: %s", exc, exc_info=True)
+        alert_bot.send_system_alert("WARNING", "evolution_check", str(exc))
 
     try:
         now = datetime.now(timezone.utc)
@@ -791,8 +805,11 @@ def main() -> None:
     startup()
 
     # Convert all UTC schedule times to local system time once at startup.
-    # NOTE: on DST-aware systems these drift by 1h at DST boundaries; restart to fix.
+    # WARNING: on DST-aware systems (US/EU), these drift by 1h at DST boundaries.
     # Sri Lanka has no DST so this is safe for the primary deployment target.
+    # If deploying to a DST region, replace with a UTC-aware scheduler or restart daily.
+    if time.localtime().tm_isdst >= 0 and time.daylight:
+        logger.warning("System timezone has DST — scheduled times may drift by 1h at DST transitions. Restart to fix.")
     morning_brief_local   = _utc_to_local_schedule_time(MORNING_BRIEF_TIME_UTC)
     weekly_report_local   = _utc_to_local_schedule_time(WEEKLY_REPORT_TIME_UTC)
     daily_retrain_local   = _utc_to_local_schedule_time(_DAILY_RETRAIN_UTC)

@@ -66,12 +66,26 @@ class TestTripleBarrierLong:
         assert result["label"] == -1
         assert result["bars_to_outcome"] == 2
 
-    def test_both_barriers_same_bar_is_loss(self, tracker):
-        """When both SL and TP are breached in the same bar, assume LOSS
-        because SL (1.5×ATR) is closer to entry than TP (2.5×ATR)."""
+    def test_both_barriers_same_bar_uses_distance(self, tracker):
+        """When both SL and TP breached in same bar, resolve by comparing
+        which extreme is further from entry (proxy for which hit first)."""
         signal = _make_signal("LONG", 6500, 6485, 6525)
+        # LONG: tp_dist = |high - entry| = 30, sl_dist = |entry - low| = 20
+        # TP distance > SL distance -> resolves as WIN
         bars = _make_bars([
-            (6530, 6480),  # both SL and TP breached in same bar
+            (6530, 6480),  # both hit, but TP extreme is further from entry
+        ])
+        result = tracker.triple_barrier_check(signal, bars)
+        assert result["outcome"] == "WIN"
+        assert result["label"] == 1
+
+    def test_both_barriers_same_bar_sl_closer_is_loss(self, tracker):
+        """When SL extreme is further from entry than TP, resolve as LOSS."""
+        signal = _make_signal("LONG", 6500, 6485, 6525)
+        # LONG: tp_dist = |high - entry| = 26, sl_dist = |entry - low| = 30
+        # SL distance > TP distance -> resolves as LOSS
+        bars = _make_bars([
+            (6526, 6470),  # both hit, but SL extreme is further from entry
         ])
         result = tracker.triple_barrier_check(signal, bars)
         assert result["outcome"] == "LOSS"

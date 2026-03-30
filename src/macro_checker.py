@@ -122,8 +122,7 @@ class MacroChecker:
             self._send_system_alert("WARNING", "yfinance", f"All retries failed: {last_exc}")
 
             if self._cache:
-                logger.info("Returning stale cached macro data")
-                self._cache_time = time.time()
+                logger.info("Returning stale cached macro data (TTL not reset)")
                 return self._cache
 
             return self._empty_macro()
@@ -153,7 +152,7 @@ class MacroChecker:
             lo, hi = info["range"]
             if lo <= vix_value < hi:
                 return {"name": name, **info}
-        return {"name": "extreme", **VIX_BUCKETS["extreme"]}
+        return {"name": "panic", **VIX_BUCKETS["panic"]}
 
     def get_vix_direction_bias(self, vix_pct: float) -> str:
         """
@@ -328,7 +327,8 @@ class MacroChecker:
     def _fallback_layer1(self) -> Dict[str, Any]:
         return {
             "bias": "MIXED", "vix_bucket": "normal", "vix_value": 0.0, "vix_pct": 0.0,
-            "size_label": "normal", "trade_allowed": True, "short_only": False,
+            "size_label": "normal", "trade_allowed": False, "short_only": False,
+            "block_reason": "Macro data unavailable (fallback)",
             "vix_direction_bias": "NEUTRAL", "us10y_direction": "flat",
             "oil_direction": "stable", "dxy_direction": "flat", "rut_direction": "neutral",
             "groq_sentiment": "NEUTRAL", "bullish_count": 0, "bearish_count": 0,

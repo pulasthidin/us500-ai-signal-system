@@ -59,6 +59,8 @@ RANGE_LOOKBACK_BARS = 20        # H1 bars to define the range boundary
 # ──────────────────────────────────────────────
 DISPLACEMENT_BODY_RATIO = 0.5   # impulse candle body must be > 50% of its range
 DISPLACEMENT_ATR_RATIO = 0.6    # impulse candle range must be > 0.6x ATR
+DISPLACEMENT_FVG_SL_ENABLED = True   # allow FVG-edge SL when swing SL fails R:R on displacement moves
+DISPLACEMENT_FVG_SL_MAX_AGE = 3      # FVG must be this fresh (bars) to use as SL
 
 # ──────────────────────────────────────────────
 # LIQUIDITY SWEEP DETECTION
@@ -80,8 +82,12 @@ VIX_BUCKETS = {
     "normal":   {"range": (15, 20),   "size": "normal",             "allowed": True,  "short_only": False},
     "elevated": {"range": (20, 25),   "size": "half",               "allowed": True,  "short_only": False},
     "high":     {"range": (25, 30),   "size": "quarter_short_only", "allowed": True,  "short_only": True},
-    "extreme":  {"range": (30, 999),  "size": "no_trade",           "allowed": False, "short_only": False},
+    "extreme":  {"range": (30, 35),   "size": "quarter_short_only", "allowed": True,  "short_only": True},
+    "panic":    {"range": (35, 999),  "size": "no_trade",           "allowed": False, "short_only": False},
 }
+
+VIX_HARD_STOP_THRESHOLD = 35
+VIX_BEARISH_CONFIRMATION_THRESHOLD = 25  # VIX above this + bearish structure = high-confidence SHORT
 
 VIX_DIRECTION_THRESHOLD = 1.5  # % change to trigger directional bias
 

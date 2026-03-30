@@ -320,6 +320,8 @@ class StructureAnalyzer:
             price_change = recent["close"].iloc[-1] - recent["close"].iloc[0]
             vol_first_half = recent["volume"].iloc[:10].mean()
             vol_second_half = recent["volume"].iloc[10:].mean()
+            if pd.isna(vol_first_half) or pd.isna(vol_second_half) or vol_first_half == 0:
+                return "unclear"
             volume_increasing = vol_second_half > vol_first_half * 1.05
 
             if price_change > 0 and volume_increasing:

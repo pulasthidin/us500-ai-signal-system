@@ -249,7 +249,7 @@ class CTraderConnection:
             response = self._parse_response(raw, ProtoOASymbolsListRes)
 
             for symbol in response.symbol:
-                if symbol.symbolName in aliases or symbol_name.upper() in symbol.symbolName.upper():
+                if symbol.symbolName in aliases or symbol.symbolName.upper() == symbol_name.upper():
                     self._symbol_cache[symbol_name] = symbol.symbolId
                     logger.info("Resolved %s -> symbolId %d", symbol.symbolName, symbol.symbolId)
                     return symbol.symbolId

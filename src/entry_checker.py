@@ -26,6 +26,8 @@ from config import (
     ATR_PERIOD,
     DISPLACEMENT_ATR_RATIO,
     DISPLACEMENT_BODY_RATIO,
+    DISPLACEMENT_FVG_SL_ENABLED,
+    DISPLACEMENT_FVG_SL_MAX_AGE,
     MIN_RR,
     SL_ATR_MULTIPLIER,
     SL_MIN_ATR_MULTIPLIER,
@@ -178,7 +180,7 @@ class EntryChecker:
                 if min_fvg_size > 0 and abs(top - bottom) < min_fvg_size:
                     continue
 
-                disp_valid = True
+                disp_valid = False
                 try:
                     iloc_pos = df.index.get_loc(idx) if idx in df.index else int(idx)
                     if not isinstance(iloc_pos, int):
@@ -188,8 +190,8 @@ class EntryChecker:
                         float(bar["open"]), float(bar["close"]),
                         float(bar["high"]), float(bar["low"]), atr,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("SMC FVG displacement check failed at idx=%s: %s", idx, exc)
 
                 if not disp_valid:
                     logger.debug("SMC FVG at idx=%s rejected — impulse candle not displacement", idx)
@@ -576,6 +578,15 @@ class EntryChecker:
                 # Primary: structural swing level
                 sl_price = swing_sl
                 sl_distance = abs(current_price - sl_price)
+                # Validate SL is on correct side — data glitch protection
+                if direction.upper() == "SHORT" and sl_price < current_price:
+                    logger.warning("Swing SL %.2f below entry %.2f for SHORT — using ATR fallback", sl_price, current_price)
+                    sl_price = current_price + SL_ATR_MULTIPLIER * atr
+                    sl_distance = abs(current_price - sl_price)
+                elif direction.upper() == "LONG" and sl_price > current_price:
+                    logger.warning("Swing SL %.2f above entry %.2f for LONG — using ATR fallback", sl_price, current_price)
+                    sl_price = current_price - SL_ATR_MULTIPLIER * atr
+                    sl_distance = abs(current_price - sl_price)
             elif fvg_edge is not None and atr > 0:
                 # Secondary: FVG edge with buffer
                 if direction.upper() == "SHORT":
@@ -799,6 +810,29 @@ class EntryChecker:
                 swing_sl=swing_sl,
             )
             rr_valid = rr_info["rr"] >= MIN_RR
+
+            if (
+                not rr_valid
+                and fvg["present"]
+                and fvg.get("displacement_valid")
+                and fvg.get("age_bars", 99) <= DISPLACEMENT_FVG_SL_MAX_AGE
+                and fvg_edge is not None
+                and DISPLACEMENT_FVG_SL_ENABLED
+            ):
+                fvg_sl_rr = self.calculate_rr(
+                    current_price, direction, atr,
+                    fvg_edge=fvg_edge,
+                    zone_levels=zone_levels,
+                    swing_sl=None,
+                )
+                if fvg_sl_rr["rr"] >= MIN_RR:
+                    logger.info(
+                        "FVG-edge SL fallback: swing R:R=%.2f (fail) -> FVG-edge R:R=%.2f (pass), SL %.2f->%.2f",
+                        rr_info["rr"], fvg_sl_rr["rr"], rr_info["sl_price"], fvg_sl_rr["sl_price"],
+                    )
+                    rr_info = fvg_sl_rr
+                    rr_valid = True
+                    sl_method = "fvg_displacement"
 
             entry_ready = fvg["present"] and rr_valid
             has_sweep = sweep_check["has_sweep"]

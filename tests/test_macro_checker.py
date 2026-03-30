@@ -65,9 +65,15 @@ class TestVixBucket:
         assert result["name"] == "high"
         assert result["short_only"] is True
 
-    def test_extreme(self, checker):
-        result = checker.get_vix_bucket(35.0)
+    def test_extreme_short_only(self, checker):
+        result = checker.get_vix_bucket(32.0)
         assert result["name"] == "extreme"
+        assert result["allowed"] is True
+        assert result["short_only"] is True
+
+    def test_panic(self, checker):
+        result = checker.get_vix_bucket(36.0)
+        assert result["name"] == "panic"
         assert result["allowed"] is False
 
 

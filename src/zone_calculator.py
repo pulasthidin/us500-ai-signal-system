@@ -70,7 +70,7 @@ class ZoneCalculator:
         previous-day high (PDH) and previous-day low (PDL).
         """
         try:
-            df = self._ctrader.fetch_bars(self._us500_id, "H1", 48)
+            df = self._ctrader.fetch_bars(self._us500_id, "H1", 72)
             if df is None or df.empty:
                 logger.warning("No H1 bars for previous day levels")
                 return {"pdh": None, "pdl": None, "date": None}
@@ -78,6 +78,7 @@ class ZoneCalculator:
             df["date"] = pd.to_datetime(df["timestamp"]).dt.date
             dates = sorted(df["date"].unique())
             if len(dates) < 2:
+                logger.warning("Only %d date(s) in %d H1 bars — PDH/PDL unavailable", len(dates), len(df))
                 return {"pdh": None, "pdl": None, "date": None}
             else:
                 yesterday = dates[-2]

@@ -118,9 +118,20 @@ class CalendarChecker:
             backoff_secs = min(60 * (2 ** (self._fail_count - 1)), 1800)  # max 30 min
             elapsed = _time.time() - self._last_fail_time
             if elapsed < backoff_secs:
+                if not self._events:
+                    logger.warning(
+                        "Calendar unavailable for %.0fs (backoff %.0fs) — news filter INACTIVE",
+                        elapsed, backoff_secs,
+                    )
+                    self._send_system_alert(
+                        "WARNING", "calendar",
+                        f"News calendar unavailable — trading without news filter (retry in {int(backoff_secs - elapsed)}s)",
+                    )
                 return
 
         self.fetch_weekly_calendar()
+        if self._fetch_failed and not self._events:
+            logger.warning("Calendar fetch failed and no cached events — news filter disabled")
 
     # ─── filters ─────────────────────────────────────────────
 
@@ -154,7 +165,7 @@ class CalendarChecker:
         todays = []
         for e in high_impact:
             event_date = str(e.get("date", ""))
-            if today_str in event_date:
+            if event_date.startswith(today_str):
                 todays.append(e)
 
         todays.sort(key=lambda x: str(x.get("date", "")))
