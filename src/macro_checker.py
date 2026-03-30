@@ -212,9 +212,9 @@ class MacroChecker:
 
     # ─── Groq sentiment ─────────────────────────────────────
 
-    def fetch_groq_sentiment(self) -> str:
+    def fetch_groq_sentiment(self, macro_data: Optional[Dict[str, Any]] = None) -> str:
         """
-        Ask Groq for one-word sentiment on today's US stock market headlines.
+        Ask Groq for a one-word sentiment based on real macro data.
         Cached for MACRO_CACHE_SECONDS to avoid burning API quota.
         Non-critical: returns NEUTRAL on any failure.
         """
@@ -226,6 +226,17 @@ class MacroChecker:
             if not api_key:
                 return "NEUTRAL"
 
+            data_summary = "No data available."
+            if macro_data:
+                parts = []
+                for key in ("vix", "dxy", "us10y", "oil", "rut"):
+                    info = macro_data.get(key, {})
+                    val = info.get("value")
+                    pct = info.get("pct_change", 0)
+                    if val is not None:
+                        parts.append(f"{key.upper()}: {val} ({pct:+.2f}%)")
+                data_summary = ", ".join(parts) if parts else "No data available."
+
             from groq import Groq
             client = Groq(api_key=api_key)
             completion = client.chat.completions.create(
@@ -234,15 +245,15 @@ class MacroChecker:
                     {
                         "role": "system",
                         "content": (
-                            "You are a financial sentiment classifier. "
-                            "Given headlines, reply with exactly one word: BULLISH, BEARISH, or NEUTRAL."
+                            "You are a financial sentiment classifier for S&P 500 intraday trading. "
+                            "Given current macro data, reply with exactly one word: BULLISH, BEARISH, or NEUTRAL."
                         ),
                     },
                     {
                         "role": "user",
                         "content": (
-                            "Based on today's top US financial headlines, "
-                            "rate the sentiment for the US stock market. "
+                            f"Current US market data: {data_summary}. "
+                            "Based on this data, what is the sentiment for the S&P 500 today? "
                             "Reply with one word only: BULLISH, BEARISH, or NEUTRAL."
                         ),
                     },
@@ -284,7 +295,7 @@ class MacroChecker:
             bucket = self.get_vix_bucket(vix_value)
             vix_dir_bias = self.get_vix_direction_bias(vix_pct)
             bias_result = self.calculate_macro_bias(macro_data)
-            groq = self.fetch_groq_sentiment()
+            groq = self.fetch_groq_sentiment(macro_data)
 
             score = 1 if bias_result["bias"] in ("LONG", "SHORT") else 0
 
