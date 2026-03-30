@@ -636,10 +636,10 @@ def main_signal_check() -> None:
             return
 
         checklist_result = checklist_engine.run_full_checklist(current_price, macro_data, news_data)
-        ml_result = model_predictor.get_ml_enhancement(checklist_result, macro_data)
-        checklist_result["ml"] = ml_result
 
         if checklist_engine.should_send_alert(checklist_result):
+            ml_result = model_predictor.get_ml_enhancement(checklist_result, macro_data)
+            checklist_result["ml"] = ml_result
             direction = checklist_result.get("direction")
             decision = checklist_result.get("decision")
 
