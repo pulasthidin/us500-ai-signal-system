@@ -648,8 +648,10 @@ def main_signal_check() -> None:
                 context = signal_logger.get_recent_context(direction)
                 checklist_result.update(context)
 
-            ml_result = model_predictor.get_ml_enhancement(checklist_result, macro_data)
-            checklist_result["ml"] = ml_result
+            ml_result = None
+            if is_real_signal:
+                ml_result = model_predictor.get_ml_enhancement(checklist_result, macro_data)
+                checklist_result["ml"] = ml_result
 
             pa_match = None
             if is_real_signal and direction:
