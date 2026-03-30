@@ -638,15 +638,18 @@ def main_signal_check() -> None:
         checklist_result = checklist_engine.run_full_checklist(current_price, macro_data, news_data)
 
         if checklist_engine.should_send_alert(checklist_result):
-            ml_result = model_predictor.get_ml_enhancement(checklist_result, macro_data)
-            checklist_result["ml"] = ml_result
             direction = checklist_result.get("direction")
             decision = checklist_result.get("decision")
 
-            # Only FULL_SEND and HALF_SIZE are real trade signals worth persisting.
-            # WAIT is an early-warning alert only — logging it creates DB rows that
-            # get outcome-resolved and corrupt the ML training dataset.
+            # Inject context features before ML so the model sees the same
+            # features it was trained on (signals_last_60min, losses_last_60min, etc.)
             is_real_signal = decision in ("FULL_SEND", "HALF_SIZE")
+            if is_real_signal and direction:
+                context = signal_logger.get_recent_context(direction)
+                checklist_result.update(context)
+
+            ml_result = model_predictor.get_ml_enhancement(checklist_result, macro_data)
+            checklist_result["ml"] = ml_result
 
             pa_match = None
             if is_real_signal and direction:
@@ -661,8 +664,6 @@ def main_signal_check() -> None:
                         pass
 
             if is_real_signal:
-                context = signal_logger.get_recent_context(direction)
-                checklist_result.update(context)
                 signal_id = signal_logger.log_signal(checklist_result)
                 if signal_id is not None:
                     checklist_result["signal_id"] = signal_id
