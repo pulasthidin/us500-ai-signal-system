@@ -121,9 +121,9 @@ class HealthMonitor:
             start_min = s_h * 60 + s_m
             end_min = e_h * 60 + e_m
             if start_min <= end_min:
-                in_session = start_min <= current_min <= end_min
+                in_session = start_min <= current_min < end_min
             else:
-                in_session = current_min >= start_min or current_min <= end_min
+                in_session = current_min >= start_min or current_min < end_min
             if not in_session:
                 return {"ok": True, "hours_since_last": 0}
 

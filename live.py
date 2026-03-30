@@ -665,12 +665,14 @@ def main_signal_check() -> None:
                     except Exception:
                         pass
 
+            signal_id = None
             if is_real_signal:
                 signal_id = signal_logger.log_signal(checklist_result)
                 if signal_id is not None:
                     checklist_result["signal_id"] = signal_id
 
-            alert_bot.send_trade_alert(checklist_result, ml_result)
+            if signal_id is not None or not is_real_signal:
+                alert_bot.send_trade_alert(checklist_result, ml_result)
 
             if is_real_signal and pa_match and checklist_result.get("signal_id") is not None:
                 signal_logger.update_pattern_alert_match(pa_match["id"], checklist_result["signal_id"])

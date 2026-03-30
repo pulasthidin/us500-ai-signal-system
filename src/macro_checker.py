@@ -89,7 +89,8 @@ class MacroChecker:
                                 continue
                             else:
                                 ticker_df = data
-                            close_series = ticker_df["Close"].dropna() if "Close" in ticker_df.columns else pd.Series(dtype=float)
+                            close_col = "Close" if "Close" in ticker_df.columns else "close" if "close" in ticker_df.columns else None
+                            close_series = ticker_df[close_col].dropna() if close_col else pd.Series(dtype=float)
                             if close_series.empty:
                                 result[key] = {"value": None, "pct_change": 0.0, "direction": "flat", "prev_close": None}
                                 continue

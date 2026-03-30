@@ -772,7 +772,6 @@ class EntryChecker:
                 range_sl = self._detect_range_sl(direction, range_condition, atr)
                 if range_sl is not None and normal_swing_sl is not None:
                     range_sl_dist = abs(current_price - range_sl)
-                    swing_sl_dist = abs(current_price - normal_swing_sl)
                     if range_sl_dist > 3.0 * atr:
                         swing_sl = normal_swing_sl
                         sl_method = "swing"
