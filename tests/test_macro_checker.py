@@ -190,6 +190,76 @@ class TestFetchMacroDataCache:
             assert mock_yf.download.call_count == 2
 
 
+class TestVixTickerFallback:
+    """When yf.download returns no VIX data, Ticker fallback recovers it."""
+
+    def test_vix_recovered_when_download_missing(self, mock_alert_bot):
+        """VIX missing from download -> Ticker fallback provides value."""
+        checker = MacroChecker(alert_bot=mock_alert_bot)
+        df = _make_yf_dataframe()
+        df[("^VIX", "Close")] = np.nan
+
+        mock_fast_info = MagicMock()
+        mock_fast_info.last_price = 23.5
+        mock_fast_info.previous_close = 22.0
+        mock_ticker_instance = MagicMock()
+        mock_ticker_instance.fast_info = mock_fast_info
+
+        with patch("src.macro_checker.yf") as mock_yf:
+            mock_yf.download.return_value = df
+            mock_yf.Ticker.return_value = mock_ticker_instance
+            result = checker.fetch_macro_data()
+
+        assert result["vix"]["value"] is not None
+        assert result["vix"]["value"] == round(23.5, 4)
+        expected_pct = round((23.5 - 22.0) / 22.0 * 100, 2)
+        assert result["vix"]["pct_change"] == expected_pct
+
+    def test_vix_stays_none_when_both_fail(self, mock_alert_bot):
+        """VIX missing from download AND Ticker fails -> stays None."""
+        checker = MacroChecker(alert_bot=mock_alert_bot)
+        df = _make_yf_dataframe()
+        df[("^VIX", "Close")] = np.nan
+
+        with patch("src.macro_checker.yf") as mock_yf:
+            mock_yf.download.return_value = df
+            mock_yf.Ticker.side_effect = Exception("Yahoo API down")
+            result = checker.fetch_macro_data()
+
+        assert result["vix"]["value"] is None
+
+    def test_fallback_not_called_when_vix_present(self, mock_alert_bot):
+        """When VIX downloads fine, Ticker is never called."""
+        checker = MacroChecker(alert_bot=mock_alert_bot)
+
+        with patch("src.macro_checker.yf") as mock_yf:
+            mock_yf.download.return_value = _make_yf_dataframe()
+            result = checker.fetch_macro_data()
+
+        mock_yf.Ticker.assert_not_called()
+        assert result["vix"]["value"] is not None
+
+    def test_fallback_uses_last_price_when_no_previous_close(self, mock_alert_bot):
+        """When previous_close is unavailable, pct_change defaults to 0."""
+        checker = MacroChecker(alert_bot=mock_alert_bot)
+        df = _make_yf_dataframe()
+        df[("^VIX", "Close")] = np.nan
+
+        mock_fast_info = MagicMock()
+        mock_fast_info.last_price = 25.0
+        mock_fast_info.previous_close = None
+        mock_ticker_instance = MagicMock()
+        mock_ticker_instance.fast_info = mock_fast_info
+
+        with patch("src.macro_checker.yf") as mock_yf:
+            mock_yf.download.return_value = df
+            mock_yf.Ticker.return_value = mock_ticker_instance
+            result = checker.fetch_macro_data()
+
+        assert result["vix"]["value"] == 25.0
+        assert result["vix"]["pct_change"] == 0.0
+
+
 class TestFetchGroqSentiment:
     """fetch_groq_sentiment returns parsed sentiment or NEUTRAL on failure."""
 

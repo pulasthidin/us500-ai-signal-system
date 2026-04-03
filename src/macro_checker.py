@@ -108,6 +108,29 @@ class MacroChecker:
                             logger.warning("Failed to parse %s: %s", key, inner_exc)
                             result[key] = {"value": None, "pct_change": 0.0, "direction": "flat", "prev_close": None}
 
+                    # VIX fallback: yf.download sometimes returns no intraday
+                    # bars for ^VIX (Yahoo API flakiness, outside CBOE hours).
+                    # Recover via the more reliable Ticker quote API.
+                    vix_entry = result.get("vix", {})
+                    if vix_entry.get("value") is None:
+                        try:
+                            ticker_obj = yf.Ticker(YF_TICKERS["vix"])
+                            info = ticker_obj.fast_info
+                            last = getattr(info, "last_price", None)
+                            prev = getattr(info, "previous_close", None)
+                            if last and last > 0:
+                                prev = prev if (prev and prev > 0) else last
+                                pct = ((last - prev) / prev * 100) if prev != 0 else 0.0
+                                result["vix"] = {
+                                    "value": round(last, 4),
+                                    "pct_change": round(pct, 2),
+                                    "direction": self.classify_direction(pct, "vix"),
+                                    "prev_close": round(prev, 4),
+                                }
+                                logger.info("VIX recovered via Ticker fallback: %.2f", last)
+                        except Exception as fb_exc:
+                            logger.warning("VIX Ticker fallback also failed: %s", fb_exc)
+
                     self._cache = result
                     self._cache_time = time.time()
                     logger.info("Macro data fetched successfully")
