@@ -134,6 +134,8 @@ CREATE TABLE IF NOT EXISTS signals (
     minutes_since_last_signal REAL DEFAULT NULL,
     recent_avg_pnl REAL DEFAULT NULL,
 
+    win_probability REAL DEFAULT NULL,
+
     outcome TEXT DEFAULT NULL,
     outcome_label INTEGER DEFAULT NULL,
     bars_to_outcome INTEGER DEFAULT NULL,
@@ -217,6 +219,7 @@ class SignalLogger:
             ("losses_last_60min", "INTEGER"),
             ("minutes_since_last_signal", "REAL"),
             ("recent_avg_pnl", "REAL"),
+            ("win_probability", "REAL"),
         ]
         for col_name, col_type in migrations:
             if col_name not in existing:
@@ -308,6 +311,9 @@ class SignalLogger:
 
             sweep_bars_ago = sweep_details.get("bars_ago") if sweep_details else None
 
+            ml_data = result.get("ml") or {}
+            win_probability = ml_data.get("win_probability")
+
             try:
                 hour_utc = datetime.fromisoformat(result.get("timestamp", "")).hour
             except Exception:
@@ -336,6 +342,7 @@ class SignalLogger:
                             asian_range_size, hour_utc, data_version,
                             signals_last_60min, losses_last_60min,
                             minutes_since_last_signal, recent_avg_pnl,
+                            win_probability,
                             save_status
                         ) VALUES (
                             ?, ?, ?, ?, ?, ?, ?,
@@ -353,6 +360,7 @@ class SignalLogger:
                             ?, ?, ?, ?,
                             ?, ?, ?, ?, ?, ?, ?,
                             ?, ?, ?, ?,
+                            ?,
                             ?
                         )
                         """,
@@ -458,6 +466,8 @@ class SignalLogger:
                             result.get("losses_last_60min"),
                             result.get("minutes_since_last_signal"),
                             result.get("recent_avg_pnl"),
+
+                            win_probability,
 
                             "complete",
                         ),
