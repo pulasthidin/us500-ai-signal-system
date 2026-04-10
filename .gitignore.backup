@@ -1,0 +1,43 @@
+# Minimal .gitignore for private backup repo
+# Only excludes things that are truly recreatable or sensitive
+
+# ─── API keys & secrets (NEVER commit) ─────
+.env
+
+# ─── Virtual environment (recreatable) ─────
+venv/
+.venv/
+env/
+
+# ─── Python bytecode (recreatable) ─────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ─── Test cache (15000+ temp files) ────────
+.pytest_cache/
+.pytest_tmp/
+htmlcov/
+.coverage
+
+# ─── GitHub workflows (token lacks workflow scope) ─
+.github/workflows/
+
+# ─── IDE config ────────────────────────────
+.claude/
+.vscode/
+.idea/
+.cursor/
+*.swp
+*.swo
+*~
+
+# ─── OS files ──────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
