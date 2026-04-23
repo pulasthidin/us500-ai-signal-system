@@ -28,6 +28,9 @@ htmlcov/
 # ─── GitHub workflows (token lacks workflow scope) ─
 .github/workflows/
 
+# ─── Logs (not needed for recovery, just local debug) ─
+logs/
+
 # ─── IDE config ────────────────────────────
 .claude/
 .vscode/
